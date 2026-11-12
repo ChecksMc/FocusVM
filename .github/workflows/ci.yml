@@ -48,5 +48,7 @@ jobs:
           "$smoke_dir/venv/bin/focusvm" --help
           "$smoke_dir/venv/bin/focusvm" --version
           export XDG_CONFIG_HOME="$smoke_dir/config"
+          export XDG_STATE_HOME="$smoke_dir/state"
           "$smoke_dir/venv/bin/focusvm" init --storage-pool focusvm
           "$smoke_dir/venv/bin/focusvm" config validate
+          "$smoke_dir/venv/bin/focusvm" list --json

@@ -1,9 +1,19 @@
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
+from uuid import uuid4
+
+import pytest
 
 from focusvm import __version__
+from focusvm.cli import main
+from focusvm.config import VMDefaults
+from focusvm.diagnostics import Diagnostic
+from focusvm.provisioning import ImageInput
+from focusvm.virtualization import VMStatus
 
 
 def run_focusvm(config_home: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -81,3 +91,65 @@ def test_config_directory_failure_is_reported_as_operation_failure(
     assert result.returncode == 4
     assert "focusvm" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_doctor_json_reports_missing_prerequisites(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    with patch(
+        "focusvm.cli.diagnose",
+        return_value=[Diagnostic("libvirt", "error", "Unavailable")],
+    ) as diagnose:
+        assert main(["doctor", "--json"]) == 3
+    assert diagnose.call_args.args[1] is None
+    assert json.loads(capsys.readouterr().out) == [
+        {"name": "libvirt", "status": "error", "detail": "Unavailable"}
+    ]
+
+
+def test_create_uses_config_defaults_and_prompts_for_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    assert main(["init", "--storage-pool", "work"]) == 0
+    capsys.readouterr()
+    status = VMStatus(uuid4(), "work", "shut-off", False, 3, 4096, 2**35, 2**18)
+    args = [
+        "create",
+        "--name",
+        "work",
+        "--image",
+        "base.qcow2",
+        "--manifest",
+        "manifest.json",
+        "--signature",
+        "manifest.sig",
+        "--keyring",
+        "publisher.gpg",
+        "--cpus",
+        "3",
+        "--json",
+    ]
+    with (
+        patch("focusvm.cli.getpass", side_effect=["guest secret", "guest secret"]),
+        patch("focusvm.cli.VMService.create", return_value=status) as create,
+    ):
+        assert main(args) == 0
+    create.assert_called_once_with(
+        "work",
+        ImageInput(
+            Path("base.qcow2"),
+            Path("manifest.json"),
+            Path("manifest.sig"),
+            Path("publisher.gpg"),
+        ),
+        "guest secret",
+        "work",
+        VMDefaults(cpus=3),
+    )
+    captured = capsys.readouterr()
+    assert "guest secret" not in captured.out + captured.err
+    assert json.loads(captured.out)["uuid"] == str(status.uuid)
