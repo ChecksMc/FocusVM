@@ -4,9 +4,21 @@ FocusVM is a planned Linux development environment for practicing independent pr
 
 The first usable milestone will pair a PySide6 desktop manager with a CLI that uses the same configuration and libvirt services. It will create and run an offline Fedora guest with Vim, Git, C++, Python, and debugging tools, and open it in a fullscreen viewer. Fedora KDE Plasma and Fedora Workstation with GNOME, both on Wayland, are the first verification targets. Other Linux distributions may work with the same dependencies and permissions.
 
-## Design and setup
+## Try the foundation
 
-This repository is in the design phase. The setup guide includes host checks you can run now and describes the proposed installation and first-run workflow.
+Use Python 3.12 or newer. From the repository root, install FocusVM in a virtual environment and create a settings file.
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+focusvm init --storage-pool focusvm
+focusvm config validate
+```
+
+`init` records the pool name in your XDG configuration. Phase 1 provides configuration and CLI tooling. VM creation and libvirt validation are planned for Phase 2.
+
+## Design and setup
 
 - [Architecture and configuration](docs/architecture.md) covers the package structure, service boundaries, state ownership, and CLI.
 - [Host and development setup](docs/setup.md) covers prerequisites, diagnostics, and the proposed first run.

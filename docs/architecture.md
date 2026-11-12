@@ -39,7 +39,7 @@ The same Qt widgets and viewer launcher serve both Fedora desktop targets. Detec
 
 Use XDG defaults for unset paths. Keep settings and state files private to the user and cache files disposable. Store connection credentials for optional integrations in a supported system credential store. If one is unavailable, the integration can prompt for a credential for that operation or stay disabled. [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/)
 
-The proposed first schema keeps persistent preferences small. These values illustrate a configured workstation. `storage_pool` is chosen during setup and `default_vm` is omitted until the user selects a managed domain.
+Schema version 1 requires the `application` and `vm_defaults` tables and an `application.storage_pool` name. The remaining preferences use the defaults below. `default_vm` is an optional libvirt domain UUID and `deep-work` is the only profile ID accepted in Phase 1. `init` checks the pool name's format. Phase 2 will check the actual pool in libvirt.
 
 ```toml
 schema_version = 1
@@ -55,7 +55,7 @@ memory_mib = 4096
 disk_gib = 32
 ```
 
-Validate schema version, allowed values, positive resource sizes, profile IDs, and available resources at the service boundary. An unsupported future schema produces a readable error. Known migrations validate the new document before atomically replacing the old one and keep a recoverable copy. Use file replacement in the destination directory for settings and operation records. Serialize GUI and CLI mutations with a per-user lock and reload the affected state while holding it to avoid overwriting changes from another process.
+The configuration service rejects invalid values, unknown fields, and unsupported schema versions. Add migrations when a new schema version ships. A migration must validate the new document before atomically replacing the old one and keep a recoverable copy. Configuration writes stage the new file in the same directory before replacing the destination. A file lock serializes writes, and the update API reads current settings under the lock before applying a change. The future GUI will use that same API.
 
 Libvirt owns actual VM status, resource allocations, device configuration, and volume identity. The local inventory stores managed domain UUIDs and volume keys. Cross-check inventory against FocusVM metadata in the domain before acting. The metadata identifies app-managed resources and libvirt still decides access. Present missing or externally changed resources explicitly and require a compatible, verified definition before starting a focus session. Never infer ownership from a display name or delete unrelated domains, disks, or pool contents.
 
@@ -69,15 +69,16 @@ The session service tracks one active focus session per host user and reads curr
 
 ## Command-line interface
 
-| Planned command | Operation |
-| --- | --- |
-| `focusvm doctor` | Check host dependencies, KVM, libvirt access, storage, guest image, and desktop capabilities |
-| `focusvm init` | Validate the chosen pool and write initial settings |
-| `focusvm gui` | Open the manager or first-run wizard |
-| `focusvm create` | Create an offline domain and per-VM overlay from a verified image |
-| `focusvm start`, `focusvm stop`, `focusvm status` | Start, stop, or inspect the selected VM |
-| `focusvm session start --profile deep-work` | Validate the profile, start or adopt the offline guest, and open the viewer |
-| `focusvm session end` | End the session and release the viewer |
-| `focusvm profiles list`, `focusvm config validate` | Inspect available profiles and check the current configuration |
+| Command | Status | Operation |
+| --- | --- | --- |
+| `focusvm init --storage-pool NAME` | Available | Write initial settings or report that identical settings already exist |
+| `focusvm config validate` | Available | Check the current configuration |
+| `focusvm doctor` | Planned | Check host dependencies, KVM, libvirt access, storage, guest image, and desktop capabilities |
+| `focusvm gui` | Planned | Open the manager or first-run wizard |
+| `focusvm create` | Planned | Create an offline domain and per-VM overlay from a verified image |
+| `focusvm start`, `focusvm stop`, `focusvm status` | Planned | Start, stop, or inspect the selected VM |
+| `focusvm session start --profile deep-work` | Planned | Validate the profile, start or adopt the offline guest, and open the viewer |
+| `focusvm session end` | Planned | End the session and release the viewer |
+| `focusvm profiles list` | Planned | Inspect available profiles |
 
 Resolve the explicit VM selection or configured default to a managed UUID. Provide plain-text errors on stderr and stable JSON output for status and diagnostics. Reserve exit codes for success, invalid input, unavailable prerequisites, and operation failure. Optional integration commands appear when their workflows are implemented.

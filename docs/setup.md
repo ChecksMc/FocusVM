@@ -1,6 +1,6 @@
 # Host and development setup
 
-The host checks below use existing Linux tools. FocusVM is in the design stage, so the application install, wizard, and `focusvm` commands describe the intended workflow.
+The Phase 1 CLI is installable from the repository and supports initializing and validating settings. The virtualization host checks use existing Linux tools. The full first-run workflow below includes planned VM and desktop features.
 
 ## Reference hosts
 
@@ -65,9 +65,9 @@ sudo virsh --connect qemu:///system pool-autostart focusvm
 5. Select **Deep Work** in the manager or run `focusvm session start --profile deep-work`. Confirm that the fullscreen guest opens, then try Vim, Git, Python, or the C++ toolchain in the guest terminal.
 6. Save work in the guest and end the focus session through the manager or `focusvm session end`. Use the VM stop action when you want to shut down the guest. The session behavior and recovery plan are described in [Focus sessions](sessions.md).
 
-## Planned development workflow
+## Development workflow
 
-The Python package and tool configuration will live in `pyproject.toml`. Once the `dev` extra exists, create a virtual environment from the repository root. On Fedora, a source build of `libvirt-python` needs a C compiler, matching Python headers, libvirt headers, and `pkg-config`. Install `gcc`, `python3-devel`, `libvirt-devel`, and `pkgconf-pkg-config` if those tools are missing. [libvirt Python binding](https://pypi.org/project/libvirt-python/) · [Fedora libvirt-devel package](https://packages.fedoraproject.org/pkgs/libvirt/libvirt-devel/)
+Create a virtual environment from the repository root. Phase 1 uses Python 3.12 or newer for the configuration service and CLI. The development tools are declared in `pyproject.toml`.
 
 ```sh
 python3 -m venv .venv
@@ -76,7 +76,9 @@ python -m pip install -e '.[dev]'
 ruff format --check .
 ruff check .
 pyright
-python -m pytest
+mypy
+python -m pytest --cov=focusvm --cov-report=term-missing
+python -m build
 ```
 
-Configure Pyright in strict mode and apply strict Mypy where practical. Use pytest-qt for widget behavior and pytest-cov for coverage. Run unit and GUI tests independently of KVM. Reserve real boot, offline guest, and fullscreen exit checks for KVM-capable Fedora hosts with both reference desktop sessions. Record the Fedora release, desktop, session type, and result for each verified environment. Use Conventional Commits for completed changes.
+Pyright and Mypy run in strict mode. Add pytest-qt with the Qt manager and run the widget tests independently of KVM. Reserve real boot, offline guest, and fullscreen exit checks for KVM-capable Fedora hosts with both reference desktop sessions. Record the Fedora release, desktop, session type, and result for each verified environment. Use Conventional Commits for completed changes.
