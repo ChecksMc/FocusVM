@@ -1,6 +1,6 @@
 # Host and development setup
 
-The Phase 1 CLI is installable from the repository and supports initializing and validating settings. The virtualization host checks use existing Linux tools. The full first-run workflow below includes planned VM and desktop features.
+The CLI is installable from the repository. Phase 2 supports managed offline VM creation from a signed local guest image and basic lifecycle management. The graphical first-run wizard and FocusVM's own guest image come in later milestones.
 
 ## Reference hosts
 
@@ -9,11 +9,12 @@ The initial verification targets are x86-64 Fedora KDE Plasma Desktop and Fedora
 On a package-managed Fedora desktop, an administrator can install the host tools with DNF. Review the package transaction before accepting it. The application and all subsequent FocusVM commands run as the regular desktop user. [Fedora QEMU packages](https://packages.fedoraproject.org/pkgs/qemu/) · [Fedora libvirt packages](https://packages.fedoraproject.org/pkgs/libvirt/) · [DNF install reference](https://dnf5.readthedocs.io/en/stable/commands/install.8.html)
 
 ```sh
-sudo dnf install qemu-kvm qemu-img qemu-ui-spice-core libvirt-daemon-qemu \
-  libvirt-daemon-driver-storage-core libvirt-client virt-viewer python3 python3-pip
+sudo dnf install qemu-kvm qemu-img qemu-ui-spice-core libvirt-daemon-kvm \
+  libvirt-daemon-driver-storage-core libvirt-client python3-libvirt \
+  virt-viewer python3 python3-pip gnupg2-verify openssl xorriso
 ```
 
-Other Linux distributions can use their equivalent packages and the same libvirt URI and checks. Match the libvirt Python binding to the Python interpreter used by FocusVM. Unknown desktop environments should retain VM controls and report unavailable desktop features. Other Wayland compositors and X11 are compatibility candidates pending testing.
+Other Linux distributions can use their equivalent packages and the same libvirt URI and checks. Match the libvirt Python binding to the interpreter running FocusVM. Unknown desktop environments retain CLI VM controls. Other Wayland compositors and X11 are compatibility candidates pending testing. [Fedora libvirt Python binding](https://packages.fedoraproject.org/pkgs/libvirt-python/python3-libvirt/)
 
 ## Check the host
 
@@ -25,7 +26,7 @@ python3 --version
 qemu-img --version
 virt-host-validate qemu
 virsh --connect qemu:///system list --all
-virsh --connect qemu:///system domcapabilities --virttype kvm --arch x86_64
+virsh --connect qemu:///system domcapabilities --virttype kvm --arch x86_64 --machine q35
 virsh --connect qemu:///system pool-list --all --details
 virt-viewer --version
 printf 'Session type: %s\nDesktop: %s\n' \
@@ -56,14 +57,41 @@ sudo virsh --connect qemu:///system pool-start focusvm
 sudo virsh --connect qemu:///system pool-autostart focusvm
 ```
 
-## Planned first run
+## Phase 2 CLI workflow
 
-1. Install the FocusVM Python package into an isolated environment from a published wheel. Keep QEMU, libvirt, and the viewer under the host package manager. The install command will be finalized when the packaging and release artifacts exist. [Python virtual environment guide](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/)
-2. Launch the Qt manager with `focusvm gui` and open the first-run wizard. The CLI equivalent begins with `focusvm doctor` and `focusvm init`. Report each dependency failure with the check that failed and a way to resolve it.
-3. Select the libvirt storage pool and import the FocusVM Fedora image. The application verifies the signature on the FocusVM manifest and matches the image digest before using it. See the [guest build recipe and image format](guest.md#build-the-base-image).
-4. Choose VM CPU, RAM, and disk limits, then create the VM through the wizard or the proposed `focusvm create` command. FocusVM creates a writable overlay and supplies a local cloud-init NoCloud seed for a unique guest login on first boot. [cloud-init NoCloud data source](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html)
-5. Select **Deep Work** in the manager or run `focusvm session start --profile deep-work`. Confirm that the fullscreen guest opens, then try Vim, Git, Python, or the C++ toolchain in the guest terminal.
-6. Save work in the guest and end the focus session through the manager or `focusvm session end`. Use the VM stop action when you want to shut down the guest. The session behavior and recovery plan are described in [Focus sessions](sessions.md).
+From the repository root, install the package using the same interpreter as the distribution's libvirt binding. The example uses Fedora's system Python and exposes its packages inside the virtual environment. The application runs as the authorized desktop user. [Python virtual environment guide](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) · [Fedora libvirt Python binding](https://packages.fedoraproject.org/pkgs/libvirt-python/python3-libvirt/)
+
+```sh
+python3 -m venv --system-site-packages .venv-vm
+. .venv-vm/bin/activate
+python -m pip install -e .
+focusvm init --storage-pool focusvm
+focusvm doctor
+```
+
+Use the actual name of your active directory pool in `init`. `doctor --json` returns structured checks. Its queries require the ordinary system libvirt connection because libvirt restricts the capability query on read-only connections. If authorization fails, check your existing host policy with the administrator. [Libvirt client authorization](https://libvirt.org/acl.html)
+
+Supply a compatible QCOW2, its JSON manifest and detached signature, and a binary keyring containing a publisher key you trust. FocusVM has no published guest image or signing key yet. The [guest image manifest](guest.md#phase-2-image-manifest) documents the supported format.
+
+```sh
+focusvm create --name work --image guest.qcow2 --manifest guest.json \
+  --signature guest.sig --keyring publisher.gpg
+focusvm list
+focusvm configure --cpus 2 --memory-mib 4096
+focusvm start
+focusvm status --json
+focusvm stop --timeout 60
+```
+
+Creation prompts twice for the `focusvm` guest password in the terminal. It defines the VM without booting it. `create` accepts optional `--cpus`, `--memory-mib`, and `--disk-gib` overrides. `configure` changes CPU and RAM on a stopped VM. `stop` requests a graceful shutdown and reports a timeout if the VM remains active.
+
+`start`, `status`, `stop`, and `configure` accept `--vm UUID`. Without it, the CLI uses the configured `application.default_vm` or the only non-abandoned VM in its inventory. The list shows creation phases. `status` queries libvirt for the actual VM state.
+
+To view a running VM manually in Phase 2, replace `UUID` with the VM's UUID. [virt-viewer manual](https://gitlab.com/virt-viewer/virt-viewer/-/raw/master/man/virt-viewer.pod)
+
+```sh
+virt-viewer --connect qemu:///system --attach --uuid UUID
+```
 
 ## Development workflow
 

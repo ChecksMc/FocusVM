@@ -1,22 +1,23 @@
 # FocusVM
 
-FocusVM is a planned Linux development environment for practicing independent programming. It puts a terminal, development tools, and local references in a VM so that reaching for AI assistance or switching to another task takes a deliberate step. You can leave a focus session at any time.
+FocusVM is a Linux project for practicing independent programming. Its development VM is designed to keep a terminal, tools, and local references close at hand so that reaching for AI assistance or switching tasks takes a deliberate step. You can leave a focus session at any time.
 
 The first usable milestone will pair a PySide6 desktop manager with a CLI that uses the same configuration and libvirt services. It will create and run an offline Fedora guest with Vim, Git, C++, Python, and debugging tools, and open it in a fullscreen viewer. Fedora KDE Plasma and Fedora Workstation with GNOME, both on Wayland, are the first verification targets. Other Linux distributions may work with the same dependencies and permissions.
 
-## Try the foundation
+## Install and check the host
 
-Use Python 3.12 or newer. From the repository root, install FocusVM in a virtual environment and create a settings file.
+Use Python 3.12 or newer. Install the [host prerequisites](docs/setup.md#reference-hosts), then use the system interpreter so FocusVM can load the distribution's libvirt binding.
 
 ```sh
-python3 -m venv .venv
-. .venv/bin/activate
+python3 -m venv --system-site-packages .venv-vm
+. .venv-vm/bin/activate
 python -m pip install -e .
 focusvm init --storage-pool focusvm
 focusvm config validate
+focusvm doctor
 ```
 
-`init` records the pool name in your XDG configuration. Phase 1 provides configuration and CLI tooling. VM creation and libvirt validation are planned for Phase 2.
+`init` records the pool name in your XDG configuration. With KVM, libvirt, and the host tools installed, the CLI can verify a signed local guest image and create, configure, start, stop, and inspect offline VMs. See the [Phase 2 setup](docs/setup.md#phase-2-cli-workflow) for the required image and host tools. The Qt manager and FocusVM guest build are upcoming milestones.
 
 ## Design and setup
 

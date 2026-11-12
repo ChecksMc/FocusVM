@@ -10,7 +10,9 @@ Add modules when their first feature lands. The initial Python package uses a `s
 src/focusvm/
   config.py          Settings, profile validation, and TOML migrations
   cli.py             Command parsing, text and JSON output, and exit codes
+  local_state.py     Private files, locking, and atomic writes
   diagnostics.py     Host and dependency checks
+  vm.py              Managed VM operations and creation inventory
   virtualization.py  Libvirt connection, domain definitions, and storage
   provisioning.py    Image verification and per-VM preparation
   sessions.py        Session transitions, offline policy, and recovery
@@ -39,7 +41,7 @@ The same Qt widgets and viewer launcher serve both Fedora desktop targets. Detec
 
 Use XDG defaults for unset paths. Keep settings and state files private to the user and cache files disposable. Store connection credentials for optional integrations in a supported system credential store. If one is unavailable, the integration can prompt for a credential for that operation or stay disabled. [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/)
 
-Schema version 1 requires the `application` and `vm_defaults` tables and an `application.storage_pool` name. The remaining preferences use the defaults below. `default_vm` is an optional libvirt domain UUID and `deep-work` is the only profile ID accepted in Phase 1. `init` checks the pool name's format. Phase 2 will check the actual pool in libvirt.
+Schema version 1 requires the `application` and `vm_defaults` tables and an `application.storage_pool` name. The remaining preferences use the defaults below. `default_vm` is an optional libvirt domain UUID and `deep-work` is the currently accepted profile ID. `init` checks the pool name's format. `doctor` and `create` check the actual pool in libvirt.
 
 ```toml
 schema_version = 1
@@ -61,9 +63,9 @@ Libvirt owns actual VM status, resource allocations, device configuration, and v
 
 ## VM and session operations
 
-Record intent with the relevant UUIDs and volume keys before mutating libvirt. After each step, check the resulting state and record enough information to reconcile an interrupted operation on the next launch. Delete only app-owned volumes whose identities are confirmed and which are no longer attached or referenced. If ownership or rollback is uncertain, preserve the volumes and report recovery steps. Default deletion removes the domain definition with disk retention. Deleting the writable disk is a separate explicit choice.
+`vms.json` under the XDG state directory records the owner token and VM UUID before creation touches libvirt. The service checkpoints base, overlay, and seed volume keys as they become known. A retry with the same inputs adopts an already-defined matching domain. If libvirt confirms that an incomplete domain is absent, the service records the attempt as abandoned and allocates a fresh UUID. A previously completed VM that disappears is reported as missing. Interrupted attempts preserve their volume records and storage for recovery.
 
-Create an offline domain and start it on request. CPU, RAM, and disk settings apply to a stopped guest in the first implementation. Report the requested virtual disk capacity and actual host usage separately. Guest shutdown is graceful by default. A timeout leaves the VM visible as still running and offers a separately confirmed force stop. Snapshots and updates to existing disk capacity follow after the create and recovery path is verified.
+Create defines an offline domain. Start verifies the saved definition, launches the VM paused, and checks the live devices before letting the guest run. `configure` changes CPU and RAM only while the guest is stopped. Disk capacity is chosen at creation and status reports both virtual capacity and allocated bytes. Stop requests a graceful shutdown and leaves the VM visible if the request times out. Force stop, deletion, snapshots, and changes to an existing disk's capacity are later features.
 
 The session service tracks one active focus session per host user and reads current domain state before it changes anything. It verifies the offline device policy before boot or adoption, launches the local viewer, and exposes recovery if viewer startup or the VM fails. End Session leaves the guest available for saving work. Stop VM shuts the guest down separately. See [Focus sessions and networking](sessions.md) and [Guest image and provisioning](guest.md).
 
@@ -73,10 +75,12 @@ The session service tracks one active focus session per host user and reads curr
 | --- | --- | --- |
 | `focusvm init --storage-pool NAME` | Available | Write initial settings or report that identical settings already exist |
 | `focusvm config validate` | Available | Check the current configuration |
-| `focusvm doctor` | Planned | Check host dependencies, KVM, libvirt access, storage, guest image, and desktop capabilities |
+| `focusvm doctor [--json]` | Available | Check host dependencies, KVM, libvirt access, storage, and desktop capabilities |
 | `focusvm gui` | Planned | Open the manager or first-run wizard |
-| `focusvm create` | Planned | Create an offline domain and per-VM overlay from a verified image |
-| `focusvm start`, `focusvm stop`, `focusvm status` | Planned | Start, stop, or inspect the selected VM |
+| `focusvm create` | Available | Create an offline domain and per-VM overlay from a verified local image |
+| `focusvm list` | Available | List VM UUIDs and creation phases from the local inventory |
+| `focusvm start`, `focusvm stop`, `focusvm status` | Available | Start, stop, or inspect the selected VM |
+| `focusvm configure` | Available | Change CPU and RAM on a stopped VM |
 | `focusvm session start --profile deep-work` | Planned | Validate the profile, start or adopt the offline guest, and open the viewer |
 | `focusvm session end` | Planned | End the session and release the viewer |
 | `focusvm profiles list` | Planned | Inspect available profiles |
