@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+      - name: Check formatting and lint
+        run: |
+          ruff format --check .
+          ruff check .
+      - name: Check types
+        run: |
+          pyright
+          mypy
+      - name: Test with coverage
+        run: python -m pytest --cov=focusvm --cov-report=term-missing
+      - name: Audit dependencies
+        run: pip-audit --skip-editable
+      - name: Build and smoke test the package
+        run: |
+          python -m build
+          smoke_dir=$(mktemp -d)
+          python -m venv "$smoke_dir/venv"
+          "$smoke_dir/venv/bin/python" -m pip install dist/*.whl
+          cd "$smoke_dir"
+          "$smoke_dir/venv/bin/focusvm" --help
+          "$smoke_dir/venv/bin/focusvm" --version
+          export XDG_CONFIG_HOME="$smoke_dir/config"
+          "$smoke_dir/venv/bin/focusvm" init --storage-pool focusvm
+          "$smoke_dir/venv/bin/focusvm" config validate
