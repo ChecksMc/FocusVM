@@ -1,15 +1,14 @@
-import fcntl
 import json
 import os
-import stat
 import tomllib
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Literal, Self, cast
 from uuid import UUID
+
+from .local_state import PrivateFileError, atomic_write, file_lock, open_owned_file
 
 SCHEMA_VERSION = 1
 MAX_TOML_INTEGER = 2**63 - 1
@@ -101,10 +100,12 @@ class ConfigStore:
 
     def load(self) -> Settings:
         try:
-            with open(self.path, "rb", opener=_open_config) as stream:
+            with open(self.path, "rb", opener=open_owned_file) as stream:
                 document: dict[str, object] = tomllib.load(stream)
         except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
             raise ConfigError(f"Invalid TOML: {error}") from error
+        except PrivateFileError as error:
+            raise ConfigError(str(error)) from error
         return _parse_settings(document)
 
     def initialize(self, settings: Settings) -> bool:
@@ -131,55 +132,14 @@ class ConfigStore:
 
     @contextmanager
     def _lock(self) -> Generator[None]:
-        parent = self.path.parent
-        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        directory = parent.lstat()
-        if (
-            not stat.S_ISDIR(directory.st_mode)
-            or directory.st_uid != os.getuid()
-            or directory.st_mode & 0o022
-        ):
-            raise ConfigError(
-                f"Settings directory must be owned by you and safe to write: {parent}"
-            )
-
-        lock_path = self.path.with_name(f".{self.path.name}.lock")
-        lock_fd = _open_config(lock_path, os.O_CREAT | os.O_RDWR)
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            yield
-        finally:
-            os.close(lock_fd)
+            with file_lock(self.path):
+                yield
+        except PrivateFileError as error:
+            raise ConfigError(str(error)) from error
 
     def _write(self, settings: Settings) -> None:
-        content = _format_settings(settings)
-        with NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=self.path.parent,
-            prefix=".config-",
-            delete=False,
-        ) as stream:
-            staged = Path(stream.name)
-            try:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-                os.replace(staged, self.path)
-            finally:
-                staged.unlink(missing_ok=True)
-
-
-def _open_config(path: str | Path, flags: int) -> int:
-    descriptor = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-            raise ConfigError(f"Expected a regular settings file owned by you: {path}")
-    except (OSError, ConfigError):
-        os.close(descriptor)
-        raise
-    return descriptor
+        atomic_write(self.path, _format_settings(settings))
 
 
 def _parse_settings(document: Mapping[str, object]) -> Settings:
