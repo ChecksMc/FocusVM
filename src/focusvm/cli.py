@@ -14,6 +14,7 @@ from uuid import UUID
 from . import __version__
 from .config import ConfigError, ConfigPaths, ConfigStore, Settings, VMDefaults
 from .diagnostics import diagnose
+from .gui import GUIUnavailable, launch
 from .local_state import PrivateFileError
 from .provisioning import ImageInput, ProvisioningError, ProvisioningUnavailable
 from .virtualization import VirtualizationError, VirtualizationUnavailable, VMStatus
@@ -36,6 +37,7 @@ class _Arguments(argparse.Namespace):
         "stop",
         "status",
         "configure",
+        "gui",
     ]
     storage_pool: str
     json: bool
@@ -118,6 +120,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     _vm_options(configure)
     _resource_options(configure, required=True)
+    commands.add_parser("gui", help="Open the FocusVM desktop manager")
     return parser
 
 
@@ -152,7 +155,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ConfigError, VMInputError, ProvisioningError) as error:
         print(f"focusvm: {error}", file=sys.stderr)
         return EXIT_INVALID_INPUT
-    except (VirtualizationUnavailable, ProvisioningUnavailable) as error:
+    except (
+        VirtualizationUnavailable,
+        ProvisioningUnavailable,
+        GUIUnavailable,
+    ) as error:
         print(f"focusvm: {error}", file=sys.stderr)
         return EXIT_UNAVAILABLE
     except (OSError, PrivateFileError, VirtualizationError, VMStateError) as error:
@@ -164,6 +171,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
+    if args.command == "gui":
+        return launch(paths)
     store = ConfigStore(paths.config_file)
     if args.command == "init":
         if store.initialize(Settings.for_pool(args.storage_pool)):

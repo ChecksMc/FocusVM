@@ -1,0 +1,257 @@
+from dataclasses import replace
+from pathlib import Path
+from threading import Event
+from uuid import UUID, uuid4
+
+import pytest
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialogButtonBox,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QPushButton,
+    QWidget,
+)
+from pytestqt.qtbot import QtBot
+
+from focusvm.config import ConfigPaths, ConfigStore, Settings, VMDefaults
+from focusvm.gui import window as gui_window
+from focusvm.gui.dialogs import CreateVMDialog
+from focusvm.provisioning import ImageInput
+from focusvm.virtualization import VirtualizationError, VMStatus
+from focusvm.vm import GIB, VMRecord
+
+VM_ID = UUID("e5cdd24a-92bd-4375-af35-822a085975df")
+VM_NAME = "test-vm"
+type Desktop = tuple[gui_window.MainWindow, ConfigStore, _VMService]
+
+
+class _VMService:
+    def __init__(self) -> None:
+        self.entered_start = Event()
+        self.finish_start = Event()
+        self.start_error: str | None = None
+        self.active = False
+        self.created: tuple[str, ImageInput, VMDefaults] | None = None
+        self.guest_secret = uuid4().hex
+
+    def list_records(self) -> tuple[VMRecord, ...]:
+        return (
+            VMRecord(VM_ID, VM_NAME, "focusvm", "a" * 64, VMDefaults(), phase="ready"),
+        )
+
+    def status(self, target: UUID | None) -> VMStatus:
+        assert target == VM_ID
+        return VMStatus(
+            uuid=VM_ID,
+            name=VM_NAME,
+            state="running" if self.active else "shut off",
+            active=self.active,
+            cpus=2,
+            memory_mib=4096,
+            disk_capacity_bytes=32 * GIB,
+            disk_allocation_bytes=GIB,
+        )
+
+    def start(self, target: UUID | None) -> VMStatus:
+        self.entered_start.set()
+        if not self.finish_start.wait(timeout=3):
+            raise VirtualizationError("Test did not release pending start")
+        if self.start_error is not None:
+            raise VirtualizationError(self.start_error)
+        self.active = True
+        return self.status(target)
+
+    def stop(self, target: UUID | None, timeout: int) -> VMStatus:
+        assert timeout == 60
+        self.active = False
+        return self.status(target)
+
+    def create(
+        self,
+        name: str,
+        source: ImageInput,
+        password: str,
+        pool: str,
+        resources: VMDefaults,
+    ) -> VMStatus:
+        assert pool == "focusvm"
+        assert password == self.guest_secret
+        self.created = (name, source, resources)
+        return self.status(VM_ID)
+
+
+def _widget[W: QWidget](parent: QWidget, cls: type[W], name: str) -> W:
+    widget = parent.findChild(cls, name)
+    assert widget is not None, name
+    return widget
+
+
+@pytest.fixture
+def desktop(qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Desktop:
+    paths = ConfigPaths(
+        config_dir=tmp_path / "config",
+        state_dir=tmp_path / "state",
+        cache_dir=tmp_path / "cache",
+        data_dir=tmp_path / "data",
+    )
+    store = ConfigStore(paths.config_file)
+    settings = Settings.for_pool("focusvm")
+    store.initialize(
+        replace(settings, application=replace(settings.application, default_vm=VM_ID))
+    )
+    service = _VMService()
+
+    def use_service(state_dir: Path, cache_dir: Path) -> _VMService:
+        assert (state_dir, cache_dir) == (paths.state_dir, paths.cache_dir)
+        return service
+
+    monkeypatch.setattr(gui_window, "VMService", use_service)
+    window = gui_window.MainWindow(paths, show_wizard=False)
+    qtbot.addWidget(window)
+    window.show()
+    return window, store, service
+
+
+def _go_to(window: QWidget, page: str) -> None:
+    navigation = _widget(window, QListWidget, "navigation")
+    for index in range(navigation.count()):
+        if navigation.item(index).text() == page:
+            navigation.setCurrentRow(index)
+            return
+    pytest.fail(f"Missing navigation page {page!r}")
+
+
+def test_manager_loads_managed_vm_and_only_implemented_pages(
+    qtbot: QtBot, desktop: Desktop
+) -> None:
+    window, _, _ = desktop
+    navigation = _widget(window, QListWidget, "navigation")
+    assert [navigation.item(i).text() for i in range(navigation.count())] == [
+        "Dashboard",
+        "Virtual Machines",
+        "Settings",
+    ]
+    _go_to(window, "Virtual Machines")
+    vm_list = _widget(window, QListWidget, "vmList")
+    qtbot.waitUntil(lambda: vm_list.count() == 1)
+    assert VM_NAME in vm_list.item(0).text()
+    vm_list.setCurrentRow(0)
+    start = _widget(window, QPushButton, "startButton")
+    qtbot.waitUntil(start.isEnabled)
+    assert not _widget(window, QPushButton, "stopButton").isEnabled()
+    assert not _widget(window, QPushButton, "openButton").isEnabled()
+
+
+def test_manager_saves_shared_settings(qtbot: QtBot, desktop: Desktop) -> None:
+    window, store, _ = desktop
+    _go_to(window, "Settings")
+    pool = _widget(window, QLineEdit, "storagePool")
+    theme = _widget(window, QComboBox, "theme")
+    cpus = _widget(window, QLineEdit, "defaultCPUs")
+    memory = _widget(window, QLineEdit, "defaultMemory")
+    disk = _widget(window, QLineEdit, "defaultDisk")
+    save = _widget(window, QPushButton, "settingsSaveButton")
+    qtbot.waitUntil(save.isEnabled)
+    assert pool.text() == "focusvm"
+    assert (cpus.text(), memory.text(), disk.text()) == ("2", "4096", "32")
+    pool.setText("focus-pool")
+    theme.setCurrentIndex(theme.findText("Dark"))
+    cpus.setText("4")
+    memory.setText("6144")
+    disk.setText("64")
+    save.click()
+    qtbot.waitUntil(lambda: store.load().application.storage_pool == "focus-pool")
+    settings = store.load()
+    assert settings.application.theme == "dark"
+    assert settings.application.default_vm == VM_ID
+    assert settings.vm_defaults == VMDefaults(4, 6144, 64)
+
+
+def test_manager_runs_vm_actions_without_blocking_navigation(
+    qtbot: QtBot, desktop: Desktop
+) -> None:
+    window, _, service = desktop
+    _go_to(window, "Virtual Machines")
+    start = _widget(window, QPushButton, "startButton")
+    stop = _widget(window, QPushButton, "stopButton")
+    open_vm = _widget(window, QPushButton, "openButton")
+    vm_list = _widget(window, QListWidget, "vmList")
+    qtbot.waitUntil(lambda: vm_list.count() == 1)
+    vm_list.setCurrentRow(0)
+    qtbot.waitUntil(start.isEnabled)
+    start.click()
+    try:
+        qtbot.waitUntil(service.entered_start.is_set)
+        _go_to(window, "Dashboard")
+        assert _widget(window, QLabel, "dashboardStatus").isVisible()
+        assert not start.isEnabled()
+    finally:
+        service.finish_start.set()
+    _go_to(window, "Virtual Machines")
+    qtbot.waitUntil(stop.isEnabled)
+    assert open_vm.isEnabled()
+    stop.click()
+    qtbot.waitUntil(start.isEnabled)
+    assert not open_vm.isEnabled()
+
+
+def test_manager_surfaces_vm_errors_and_allows_retry(
+    qtbot: QtBot, desktop: Desktop
+) -> None:
+    window, _, service = desktop
+    service.start_error = "libvirt denied permission to start test VM"
+    service.finish_start.set()
+    _go_to(window, "Virtual Machines")
+    vm_list = _widget(window, QListWidget, "vmList")
+    qtbot.waitUntil(lambda: vm_list.count() == 1)
+    vm_list.setCurrentRow(0)
+    start = _widget(window, QPushButton, "startButton")
+    task_status = _widget(window, QLabel, "taskStatus")
+    qtbot.waitUntil(start.isEnabled)
+    start.click()
+    qtbot.waitUntil(lambda: "libvirt denied permission" in task_status.text())
+    qtbot.waitUntil(start.isEnabled)
+
+
+def test_manager_submits_validated_creation_dialog(
+    qtbot: QtBot, desktop: Desktop, tmp_path: Path
+) -> None:
+    window, _, service = desktop
+    _go_to(window, "Virtual Machines")
+    create = _widget(window, QPushButton, "createButton")
+    qtbot.waitUntil(create.isEnabled)
+    source = ImageInput(
+        tmp_path / "base.qcow2",
+        tmp_path / "image.json",
+        tmp_path / "image.sig",
+        tmp_path / "trusted.gpg",
+    )
+
+    def fill_dialog() -> None:
+        dialog = window.findChild(CreateVMDialog)
+        assert dialog is not None
+        buttons = dialog.findChild(QDialogButtonBox)
+        assert buttons is not None
+        submit = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        submit.click()
+        assert _widget(dialog, QLabel, "createError").text() == "Enter a VM name."
+        for field, value in {
+            "vmName": "new-vm",
+            "guestImage": str(source.image),
+            "manifest": str(source.manifest),
+            "signature": str(source.signature),
+            "keyring": str(source.keyring),
+            "guestPassword": service.guest_secret,
+            "confirmPassword": service.guest_secret,
+        }.items():
+            _widget(dialog, QLineEdit, field).setText(value)
+        submit.click()
+        assert not _widget(dialog, QLineEdit, "guestPassword").text()
+
+    QTimer.singleShot(0, fill_dialog)
+    create.click()
+    qtbot.waitUntil(lambda: service.created is not None and not window.tasks.busy)
+    assert service.created == ("new-vm", source, VMDefaults())

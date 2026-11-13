@@ -20,6 +20,7 @@ classifiers = [
 focusvm = "focusvm.cli:main"
 
 [project.optional-dependencies]
+gui = ["PySide6>=6.8"]
 dev = [
     "build>=1.2",
     "mypy>=1.15",
@@ -27,6 +28,7 @@ dev = [
     "pyright>=1.1.396",
     "pytest>=8.3",
     "pytest-cov>=7",
+    "pytest-qt>=4.5",
     "ruff>=0.11",
 ]
 
@@ -62,6 +64,7 @@ strict = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-config --strict-markers"
+qt_api = "pyside6"
 
 [tool.coverage.run]
 branch = true

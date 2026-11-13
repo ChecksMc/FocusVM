@@ -309,6 +309,14 @@ class LibvirtBackend:
             domain = self._require_domain(uuid)
             return self._status(domain, self._owned_xml(domain, owner_id))
 
+    def check_console(self, uuid: UUID, owner_id: UUID) -> None:
+        with self._operation(f"Cannot open the console for VM {uuid}"):
+            domain = self._require_domain(uuid)
+            if not domain.isActive():
+                raise VirtualizationError("Start the VM before opening its console")
+            self._validate_offline(self._owned_xml(domain, owner_id))
+            self._validate_offline(self._owned_xml(domain, owner_id, live=True))
+
     def check_inventory(
         self, uuid: UUID, owner_id: UUID, overlay_key: str, seed_key: str
     ) -> None:
