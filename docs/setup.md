@@ -1,6 +1,6 @@
 # Host and development setup
 
-The CLI is installable from the repository. Phase 2 supports managed offline VM creation from a signed local guest image and basic lifecycle management. The graphical first-run wizard and FocusVM's own guest image come in later milestones.
+Install FocusVM from the repository. The CLI and desktop manager support managed offline VM creation from a signed local guest image and basic lifecycle management. The project's own Fedora guest image is a later milestone.
 
 ## Reference hosts
 
@@ -87,11 +87,26 @@ Creation prompts twice for the `focusvm` guest password in the terminal. It defi
 
 `start`, `status`, `stop`, and `configure` accept `--vm UUID`. Without it, the CLI uses the configured `application.default_vm` or the only non-abandoned VM in its inventory. The list shows creation phases. `status` queries libvirt for the actual VM state.
 
-To view a running VM manually in Phase 2, replace `UUID` with the VM's UUID. [virt-viewer manual](https://gitlab.com/virt-viewer/virt-viewer/-/raw/master/man/virt-viewer.pod)
+To view a running VM from the CLI, replace `UUID` with the VM's UUID. [virt-viewer manual](https://gitlab.com/virt-viewer/virt-viewer/-/raw/master/man/virt-viewer.pod)
 
 ```sh
 virt-viewer --connect qemu:///system --attach --uuid UUID
 ```
+
+## Desktop manager
+
+With the host prerequisites installed, use the same system Python virtual environment as the CLI. Install the optional Qt dependencies, then run the manager from your graphical session.
+
+```sh
+python -m pip install -e '.[gui]'
+focusvm gui
+```
+
+On first launch without settings, enter an active directory-backed pool in the setup wizard and run **Check host**. Save when the required checks pass. Existing CLI settings are loaded automatically. **Dashboard** shows the selected VM's status and offers host diagnostics.
+
+In **Virtual Machines**, use **Create VM** with the [signed image inputs](guest.md#phase-2-image-manifest) and choose a guest password. Use **CPU and RAM** while the VM is stopped. Use **Start** to boot it, **Open Console** to attach a local virt-viewer window, and **Shut Down** to request guest shutdown. Use **Refresh** to load inventory changes from the CLI. The manager periodically reads the selected VM's status while displaying the dashboard or VM page.
+
+In **Settings**, set the pool for new VMs, the default VM, creation resources, and the appearance preference. Changes are saved to the same XDG configuration as the CLI. The System appearance follows the Qt platform theme. [Qt appearance settings](https://doc.qt.io/qt-6/qstylehints.html#setColorScheme)
 
 ## Development workflow
 
@@ -100,13 +115,13 @@ Create a virtual environment from the repository root. Phase 1 uses Python 3.12 
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -e '.[dev]'
+python -m pip install -e '.[dev,gui]'
 ruff format --check .
 ruff check .
 pyright
 mypy
-python -m pytest --cov=focusvm --cov-report=term-missing
+QT_QPA_PLATFORM=offscreen python -m pytest --cov=focusvm --cov-report=term-missing
 python -m build
 ```
 
-Pyright and Mypy run in strict mode. Add pytest-qt with the Qt manager and run the widget tests independently of KVM. Reserve real boot, offline guest, and fullscreen exit checks for KVM-capable Fedora hosts with both reference desktop sessions. Record the Fedora release, desktop, session type, and result for each verified environment. Use Conventional Commits for completed changes.
+Pyright and Mypy run in strict mode. The pytest-qt widget tests run independently of KVM. Reserve real boot, offline guest, and fullscreen exit checks for KVM-capable Fedora hosts with both reference desktop sessions. Record the Fedora release, desktop, session type, and result for each verified environment. Use Conventional Commits for completed changes.

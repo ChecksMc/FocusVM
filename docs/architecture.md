@@ -22,7 +22,7 @@ guest/               Guest build recipe and image manifest tooling
 tests/               Unit, GUI, and KVM integration suites
 ```
 
-Both entry points call the configuration, diagnostics, virtualization, provisioning, and session services directly. Sessions coordinate the VM and viewer services. The viewer module owns subprocess launch and release behavior. Keep the core free of Qt imports and give the Qt manager worker threads for blocking libvirt, image, and file operations. Workers return results through Qt signals and the GUI refreshes against shared state. Show controls only for implemented actions. Begin with the dashboard, VM management, sessions, and essential settings, then add resource and integration pages with their corresponding services.
+Both frontends use the shared configuration, diagnostics, and VM services. The core remains free of Qt imports. The Qt manager runs libvirt, image, and file operations on a background thread and receives results through Qt signals. Its pages cover the dashboard, VM management, and settings. The viewer command builder supplies the attached local console used by the manager. Later sessions will coordinate VM policy and viewer lifecycle.
 
 Use the native `libvirt-python` bindings for management. Open `qemu:///system` explicitly and require KVM for the reference release. `virsh` is useful for host diagnostics and recovery. Require a usable system libvirt connection and a configured directory-backed storage pool. Libvirt and the host's access controls govern permission checks. The application checks for missing privileges and reports the failing operation to the user. [QEMU/KVM driver](https://libvirt.org/drvqemu.html) · [Libvirt storage pools and volumes](https://libvirt.org/storage.html)
 
@@ -76,7 +76,7 @@ The session service tracks one active focus session per host user and reads curr
 | `focusvm init --storage-pool NAME` | Available | Write initial settings or report that identical settings already exist |
 | `focusvm config validate` | Available | Check the current configuration |
 | `focusvm doctor [--json]` | Available | Check host dependencies, KVM, libvirt access, storage, and desktop capabilities |
-| `focusvm gui` | Planned | Open the manager or first-run wizard |
+| `focusvm gui` | Available with the `gui` extra | Open the manager and launch setup when settings are absent |
 | `focusvm create` | Available | Create an offline domain and per-VM overlay from a verified local image |
 | `focusvm list` | Available | List VM UUIDs and creation phases from the local inventory |
 | `focusvm start`, `focusvm stop`, `focusvm status` | Available | Start, stop, or inspect the selected VM |

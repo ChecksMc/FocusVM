@@ -11,7 +11,7 @@ Keep package metadata, tool configuration and pytest markers in `pyproject.toml`
 | Ruff format and lint | Formatting, imports and configured lint rules. |
 | Pyright strict | Type checking for the application package, including the typed boundaries around libvirt and Qt. Add strict Mypy checks where the dependencies and stubs support them. |
 | pytest with pytest-cov | Config validation and migration, VM and session transitions, policy selection, recovery, and ownership checks on storage paths. Report coverage for the executed suite. |
-| pytest-qt | Window startup, navigation for implemented pages, settings persistence, validation and error messages, and background operation updates. |
+| pytest-qt | Window startup, navigation, settings persistence, setup validation and errors, and background VM operations. CI uses the Qt offscreen platform for these tests. |
 | Package build | Build a wheel and source distribution. Install the wheel in a clean environment and check entry points and bundled resources. |
 
 Unit tests can substitute libvirt and the viewer at their application boundaries. Headless GUI tests check application behavior. Run real libvirt integration and Wayland viewer checks separately on hosts with the required capabilities, and record skipped checks and their reasons. A skipped required reference-host check leaves release verification incomplete. [pytest skip reporting](https://docs.pytest.org/en/stable/how-to/skipping.html)

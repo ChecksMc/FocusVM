@@ -17,7 +17,18 @@ focusvm config validate
 focusvm doctor
 ```
 
-`init` records the pool name in your XDG configuration. With KVM, libvirt, and the host tools installed, the CLI can verify a signed local guest image and create, configure, start, stop, and inspect offline VMs. See the [Phase 2 setup](docs/setup.md#phase-2-cli-workflow) for the required image and host tools. The Qt manager and FocusVM guest build are upcoming milestones.
+`init` records the pool name in your XDG configuration. With KVM, libvirt, and the host tools installed, the CLI can verify a signed local guest image and create, configure, start, stop, and inspect offline VMs. See the [CLI setup](docs/setup.md#phase-2-cli-workflow) for the required image and host tools.
+
+## Desktop manager
+
+Install the optional Qt dependencies and launch the manager from your Linux desktop session.
+
+```sh
+python -m pip install -e '.[gui]'
+focusvm gui
+```
+
+The manager provides a first-run wizard, host checks, VM management, and shared settings. See [Desktop setup and usage](docs/setup.md#desktop-manager). The FocusVM guest image and fullscreen focus sessions are upcoming milestones.
 
 ## Design and setup
 
