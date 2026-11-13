@@ -1,6 +1,6 @@
 # Host and development setup
 
-Install FocusVM from the repository. The CLI and desktop manager support managed offline VM creation from a signed local guest image and basic lifecycle management. The project's own Fedora guest image is a later milestone.
+Install FocusVM from the repository. The CLI and desktop manager support managed offline VM creation from a signed local guest image and basic lifecycle management. Build the Fedora development image using the [guest build guide](guest.md#build-the-base-image).
 
 ## Reference hosts
 
@@ -71,7 +71,7 @@ focusvm doctor
 
 Use the actual name of your active directory pool in `init`. `doctor --json` returns structured checks. Its queries require the ordinary system libvirt connection because libvirt restricts the capability query on read-only connections. If authorization fails, check your existing host policy with the administrator. [Libvirt client authorization](https://libvirt.org/acl.html)
 
-Supply a compatible QCOW2, its JSON manifest and detached signature, and a binary keyring containing a publisher key you trust. FocusVM has no published guest image or signing key yet. The [guest image manifest](guest.md#phase-2-image-manifest) documents the supported format.
+Supply a compatible QCOW2, its JSON manifest and detached signature, and a binary keyring containing a publisher key you trust. The [guest builder](guest.md#build-the-base-image) can produce these image files with your signing key. The repository has no published guest image or signing key yet.
 
 ```sh
 focusvm create --name work --image guest.qcow2 --manifest guest.json \

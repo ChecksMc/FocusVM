@@ -28,7 +28,7 @@ python -m pip install -e '.[gui]'
 focusvm gui
 ```
 
-The manager provides a first-run wizard, host checks, VM management, and shared settings. See [Desktop setup and usage](docs/setup.md#desktop-manager). The FocusVM guest image and fullscreen focus sessions are upcoming milestones.
+The manager provides a first-run wizard, host checks, VM management, and shared settings. The [Fedora guest build guide](docs/guest.md#build-the-base-image) shows how to build the offline development image. Fullscreen focus sessions are a later milestone. [Desktop setup and usage](docs/setup.md#desktop-manager)
 
 ## Design and setup
 
