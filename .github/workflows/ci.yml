@@ -34,6 +34,7 @@ jobs:
         run: |
           ruff format --check .
           ruff check .
+          bash -n guest/verify.sh
       - name: Check types
         run: |
           pyright
