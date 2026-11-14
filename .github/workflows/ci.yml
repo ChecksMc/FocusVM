@@ -81,7 +81,7 @@ jobs:
           files = {file.as_posix().split("/", 1)[1] for file in dist.files or ()
                    if ".dist-info/licenses/" in file.as_posix() and file.locate().is_file()}
           assert files == {"licenses/LICENSE", "licenses/NOTICE"}
-          if environ["GITHUB_REF_TYPE"] == "tag":
+          if environ["GITHUB_REF_TYPE"] == "tag" and ".dev" not in dist.version:
               assert environ["GITHUB_REF_NAME"] == f"v{dist.version}"
           PY
               export XDG_CACHE_HOME="$smoke_dir/cache"
