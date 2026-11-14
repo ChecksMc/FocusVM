@@ -123,7 +123,9 @@ class _Backend:
             raise VirtualizationError("connection lost after media change")
         return updated
 
-    def start(self, vm: UUID, owner: UUID) -> VMStatus:
+    def start(self, vm: UUID, owner: UUID, base_key: str) -> VMStatus:
+        base = self.domains[vm][0].base
+        assert base is not None and base.key == base_key
         self.start_calls += 1
         return self._change_state(vm, owner, state="running", active=True)
 
@@ -191,6 +193,21 @@ def test_retry_reconciles_definition_created_before_connection_loss(
     assert record.phase == "pending"
 
     assert _create(service, source).uuid == record.uuid
+    assert service.list_records()[0].phase == "ready"
+    assert len(backend.overlays) == 1
+
+
+def test_start_reconciles_definition_created_before_connection_loss(
+    vm_environment: tuple[VMService, _Backend, ImageInput],
+) -> None:
+    service, backend, source = vm_environment
+    backend.fail_after_define = True
+    with pytest.raises(VMStateError, match="Retry with the same name"):
+        _create(service, source)
+    (record,) = service.list_records()
+    assert record.phase == "pending"
+
+    assert service.start(record.uuid).active
     assert service.list_records()[0].phase == "ready"
     assert len(backend.overlays) == 1
 

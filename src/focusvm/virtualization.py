@@ -75,6 +75,7 @@ class VMDefinition:
     memory_mib: int
     overlay: Volume
     seed: Volume
+    base: Volume | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +289,7 @@ class LibvirtBackend:
 
     def define(self, definition: VMDefinition) -> VMStatus:
         _validate_resources(definition.cpus, definition.memory_mib)
+        base_key = None if definition.base is None else definition.base.key
         with self._operation(f"Cannot define VM {definition.name!r}"):
             existing = self._find_domain(definition.uuid)
             if existing is not None:
@@ -302,7 +304,7 @@ class LibvirtBackend:
                     raise VirtualizationError(
                         f"VM UUID {definition.uuid} is already in use"
                     )
-                self._validate_offline(root)
+                self._validate_offline(root, base_key)
                 return self._status(existing, root)
             try:
                 self._connection.lookupByName(definition.name)
@@ -319,7 +321,7 @@ class LibvirtBackend:
                 self._driver.VIR_DOMAIN_DEFINE_VALIDATE,
             )
             root = self._owned_xml(domain, definition.owner_id)
-            self._validate_offline(root)
+            self._validate_offline(root, base_key)
             return self._status(domain, root)
 
     def status(self, uuid: UUID, owner_id: UUID) -> VMStatus:
@@ -327,21 +329,29 @@ class LibvirtBackend:
             domain = self._require_domain(uuid)
             return self._status(domain, self._owned_xml(domain, owner_id))
 
-    def check_console(self, uuid: UUID, owner_id: UUID) -> None:
+    def check_console(
+        self, uuid: UUID, owner_id: UUID, base_key: str | None = None
+    ) -> None:
         with self._operation(f"Cannot open the console for VM {uuid}"):
             domain = self._require_domain(uuid)
             if not domain.isActive():
                 raise VirtualizationError("Start the VM before opening its console")
-            self._validate_offline(self._owned_xml(domain, owner_id))
-            self._validate_offline(self._owned_xml(domain, owner_id, live=True))
+            self._validate_offline(self._owned_xml(domain, owner_id), base_key)
+            self._validate_offline(
+                self._owned_xml(domain, owner_id, live=True), base_key, live=True
+            )
 
-    def focus_status(self, uuid: UUID, owner_id: UUID) -> VMStatus:
+    def focus_status(
+        self, uuid: UUID, owner_id: UUID, base_key: str | None = None
+    ) -> VMStatus:
         with self._operation(f"Cannot verify offline policy for VM {uuid}"):
             domain = self._require_domain(uuid)
             root = self._owned_xml(domain, owner_id)
-            self._validate_offline(root)
+            self._validate_offline(root, base_key)
             if domain.isActive():
-                self._validate_offline(self._owned_xml(domain, owner_id, live=True))
+                self._validate_offline(
+                    self._owned_xml(domain, owner_id, live=True), base_key, live=True
+                )
             elif domain.hasManagedSaveImage(0):
                 raise VirtualizationError(
                     "Resolve the VM's managed-save image before focusing"
@@ -386,22 +396,7 @@ class LibvirtBackend:
     def offline_disk(self, uuid: UUID, owner_id: UUID, base_key: str) -> Path:
         with self._operation(f"Cannot open the stopped VM disk {uuid}"):
             _, root = self._stopped_offline_xml(uuid, owner_id)
-            overlay, _ = self._storage(root)
-            base = self._connection.storageVolLookupByKey(base_key)
-            base_xml = _xml(base.XMLDesc(0))
-            overlay_xml = _xml(overlay.XMLDesc(0))
-            if (
-                base_xml.find("target/format[@type='qcow2']") is None
-                or base_xml.find("backingStore/path") is not None
-                or overlay_xml.find("target/format[@type='qcow2']") is None
-                or overlay_xml.findtext("backingStore/path") != base.path()
-                or overlay_xml.find("backingStore/format[@type='qcow2']") is None
-                or overlay_xml.find("backingStore/backingStore/path") is not None
-            ):
-                raise VirtualizationError(
-                    "VM disk backing image does not match its inventory"
-                )
-            return Path(overlay.path())
+            return self._validate_backing(root, base_key)
 
     def set_resource_media(
         self, uuid: UUID, owner_id: UUID, volume: Volume | None
@@ -442,13 +437,17 @@ class LibvirtBackend:
                 )
             return self._status(domain, actual_definition)
 
-    def start(self, uuid: UUID, owner_id: UUID) -> VMStatus:
+    def start(
+        self, uuid: UUID, owner_id: UUID, base_key: str | None = None
+    ) -> VMStatus:
         with self._operation(f"Cannot start VM {uuid}"):
             domain = self._require_domain(uuid)
             root = self._owned_xml(domain, owner_id)
-            self._validate_offline(root)
+            self._validate_offline(root, base_key)
             if domain.isActive():
-                self._validate_offline(self._owned_xml(domain, owner_id, live=True))
+                self._validate_offline(
+                    self._owned_xml(domain, owner_id, live=True), base_key, live=True
+                )
                 if domain.info()[0] == self._driver.VIR_DOMAIN_PAUSED:
                     domain.resume()
                 return self._status(domain, root)
@@ -459,12 +458,20 @@ class LibvirtBackend:
 
             domain.createWithFlags(self._driver.VIR_DOMAIN_START_PAUSED)
             try:
-                self._validate_offline(self._owned_xml(domain, owner_id, live=True))
+                self._validate_offline(
+                    self._owned_xml(domain, owner_id, live=True), base_key, live=True
+                )
                 domain.resume()
-            except (VirtualizationError, self._driver.libvirtError) as error:
+            except (
+                KeyboardInterrupt,
+                VirtualizationError,
+                self._driver.libvirtError,
+            ) as error:
                 with suppress(self._driver.libvirtError):
                     if domain.info()[0] == self._driver.VIR_DOMAIN_PAUSED:
                         domain.destroy()
+                if isinstance(error, KeyboardInterrupt):
+                    raise
                 raise VirtualizationError(
                     f"VM {uuid} failed to start with a verified live configuration: {error}. "
                     "Check its current state before retrying."
@@ -534,14 +541,30 @@ class LibvirtBackend:
         stream = self._connection.newStream(0)
         try:
             volume.upload(stream, 0, length, 0)
-            while chunk := source.read(CHUNK_SIZE):
+            remaining = length
+            while remaining:
+                chunk = source.read(min(CHUNK_SIZE, remaining))
+                if not chunk:
+                    raise VirtualizationError(
+                        f"Source for volume {name!r} shrank during upload"
+                    )
+                remaining -= len(chunk)
                 while chunk:
                     written = stream.send(chunk)
-                    if written <= 0:
+                    if not 0 < written <= len(chunk):
                         raise VirtualizationError(f"Upload to volume {name!r} stalled")
                     chunk = chunk[written:]
+            if source.read(1):
+                raise VirtualizationError(
+                    f"Source for volume {name!r} grew during upload"
+                )
             stream.finish()
-        except (OSError, VirtualizationError, self._driver.libvirtError):
+        except (
+            KeyboardInterrupt,
+            OSError,
+            VirtualizationError,
+            self._driver.libvirtError,
+        ):
             with suppress(self._driver.libvirtError):
                 stream.abort()
             raise
@@ -571,7 +594,7 @@ class LibvirtBackend:
                     return False
                 digest.update(chunk)
             stream.finish()
-        except self._driver.libvirtError:
+        except (KeyboardInterrupt, self._driver.libvirtError):
             with suppress(self._driver.libvirtError):
                 stream.abort()
             raise
@@ -634,9 +657,38 @@ class LibvirtBackend:
             self._connection.storageVolLookupByKey(seed_key),
         )
 
-    def _validate_offline(self, root: ET.Element) -> None:
+    def _validate_offline(
+        self, root: ET.Element, base_key: str | None = None, *, live: bool = False
+    ) -> None:
         _validate_offline_devices(root)
         self._validate_volume_paths(root)
+        if base_key is not None:
+            self._validate_backing(root, base_key, live=live)
+
+    def _validate_backing(
+        self, root: ET.Element, base_key: str, *, live: bool = False
+    ) -> Path:
+        overlay, _ = self._storage(root)
+        base = self._connection.storageVolLookupByKey(base_key)
+        base_xml = _xml(base.XMLDesc(0))
+        overlay_xml = _xml(overlay.XMLDesc(0))
+        disk = _find_disk(root, "vda")
+        backing = [] if disk is None else disk.findall("backingStore")
+        if (
+            overlay.path() == base.path()
+            or base_xml.find("target/format[@type='qcow2']") is None
+            or base_xml.find("backingStore/path") is not None
+            or overlay_xml.find("target/format[@type='qcow2']") is None
+            or overlay_xml.findtext("backingStore/path") != base.path()
+            or overlay_xml.find("backingStore/format[@type='qcow2']") is None
+            or overlay_xml.find("backingStore/backingStore/path") is not None
+            # Older persistent definitions rely on QCOW2 metadata to supply the chain.
+            or ((live or backing) and not _matches_backing(backing, base.path()))
+        ):
+            raise VirtualizationError(
+                "VM disk backing image does not match its inventory"
+            )
+        return Path(overlay.path())
 
     def _validate_volume_paths(self, root: ET.Element) -> None:
         overlay, seed = self._storage(root)
@@ -777,7 +829,14 @@ def _domain_xml(definition: VMDefinition) -> ET.Element:
     ET.SubElement(features, "apic")
     ET.SubElement(root, "on_poweroff").text = "destroy"
     devices = ET.SubElement(root, "devices")
-    _add_disk(devices, definition.overlay, "vda", "disk", "qcow2", "virtio")
+    overlay_disk = _add_disk(
+        devices, definition.overlay, "vda", "disk", "qcow2", "virtio"
+    )
+    if definition.base is not None:
+        backing = ET.SubElement(overlay_disk, "backingStore", {"type": "file"})
+        ET.SubElement(backing, "format", {"type": "qcow2"})
+        ET.SubElement(backing, "source", {"file": str(definition.base.path)})
+        ET.SubElement(backing, "backingStore")
     _add_disk(devices, definition.seed, "sda", "cdrom", "raw", "sata")
     graphics = ET.SubElement(devices, "graphics", {"type": "spice"})
     ET.SubElement(graphics, "listen", {"type": "none"})
@@ -795,13 +854,14 @@ def _add_disk(
     device: str,
     format_name: str,
     bus: str,
-) -> None:
+) -> ET.Element:
     disk = ET.SubElement(devices, "disk", {"type": "file", "device": device})
     ET.SubElement(disk, "driver", {"name": "qemu", "type": format_name})
     ET.SubElement(disk, "source", {"file": os.fspath(volume.path)})
     ET.SubElement(disk, "target", {"dev": target, "bus": bus})
     if device == "cdrom":
         ET.SubElement(disk, "readonly")
+    return disk
 
 
 def _validate_offline_devices(root: ET.Element) -> None:
@@ -834,6 +894,8 @@ def _validate_offline_devices(root: ET.Element) -> None:
     }
     if devices is None or any(device.tag not in allowed for device in devices):
         raise VirtualizationError("VM definition contains an unexpected device")
+    if devices.find("disk/mirror") is not None:
+        raise VirtualizationError("VM definition contains a disk mirror in progress")
     for device in devices.findall("input"):
         if (
             device.get("type") not in {"mouse", "keyboard", "tablet"}
@@ -863,13 +925,22 @@ def _is_q35(machine: str) -> bool:
 
 def _private_spice(graphics: ET.Element) -> bool:
     listeners = graphics.findall("listen")
+    clipboard = graphics.findall("clipboard")
+    transfers = graphics.findall("filetransfer")
     return (
         graphics.get("type") == "spice"
-        and graphics.get("listen") is None
+        and all(graphics.get(attribute) is None for attribute in ("listen", "socket"))
+        and all(
+            graphics.get(attribute, "-1") in {"-1", "0"}
+            for attribute in ("port", "tlsPort")
+        )
+        and graphics.get("autoport", "no") == "no"
         and len(listeners) == 1
-        and listeners[0].get("type") == "none"
-        and graphics.find("clipboard[@copypaste='no']") is not None
-        and graphics.find("filetransfer[@enable='no']") is not None
+        and listeners[0].attrib == {"type": "none"}
+        and len(clipboard) == 1
+        and clipboard[0].get("copypaste") == "no"
+        and len(transfers) == 1
+        and transfers[0].get("enable") == "no"
     )
 
 
@@ -883,14 +954,21 @@ def _validate_disk(
         disk is None
         or disk.get("device") != device
         or disk.get("type") != "file"
-        or disk.find(f"driver[@type='{format_name}']") is None
+        or disk.find(f"driver[@name='qemu'][@type='{format_name}']") is None
         or disk.find(f"target[@dev='{target}'][@bus='{bus}']") is None
         or (device == "cdrom" and disk.find("readonly") is None)
         or source is None
         or source.get("file") != path
         or len(disk.findall("source")) != 1
+        or source.get("protocol") is not None
         or source.find("host") is not None
         or disk.find(".//dataStore") is not None
+        or (
+            device == "cdrom"
+            and any(
+                layer.attrib or len(layer) for layer in disk.findall("backingStore")
+            )
+        )
         or any(
             layer.get("type", "file") != "file" for layer in disk.iter("backingStore")
         )
@@ -900,6 +978,26 @@ def _validate_disk(
 
 def _find_disk(root: ET.Element, target: str) -> ET.Element | None:
     return root.find(f"devices/disk/target[@dev='{target}']/..")
+
+
+def _matches_backing(layers: list[ET.Element], base_path: str) -> bool:
+    if len(layers) != 1 or layers[0].get("type") != "file":
+        return False
+    layer = layers[0]
+    formats = layer.findall("format")
+    sources = layer.findall("source")
+    tail = layer.findall("backingStore")
+    return (
+        len(formats) == 1
+        and formats[0].get("type") == "qcow2"
+        and len(sources) == 1
+        and sources[0].get("file") == base_path
+        and sources[0].get("protocol") is None
+        and sources[0].find("host") is None
+        and len(tail) == 1
+        and not tail[0].attrib
+        and not len(tail[0])
+    )
 
 
 def _validate_resource_iso(source: BufferedReader) -> None:

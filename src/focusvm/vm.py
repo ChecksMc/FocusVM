@@ -10,7 +10,7 @@ from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from .config import VMDefaults
-from .local_state import atomic_write, file_lock, open_owned_file
+from .local_state import atomic_write, file_lock, open_private_file
 from .provisioning import ImageInput, VerifiedImage, build_seed, stage_image
 from .virtualization import (
     DomainNotFound,
@@ -143,10 +143,7 @@ class VMService:
                 self._save_record(inventory, replace(record, phase="abandoned"))
                 return None
             record = self._check_receipts(backend, inventory.owner_id, record)
-            if record.phase == "pending":
-                self._save_record(inventory, replace(record, phase="ready"))
-            else:
-                self._persist_reconciled(inventory, record)
+            self._persist_reconciled(inventory, record)
             return status
         return None
 
@@ -186,6 +183,7 @@ class VMService:
                     memory_mib=record.resources.memory_mib,
                     overlay=overlay,
                     seed=seed,
+                    base=base,
                 )
             )
             self._save_record(inventory, replace(record, phase="ready"))
@@ -200,31 +198,33 @@ class VMService:
         return tuple(self._load().records.values())
 
     def status(self, target: UUID | None) -> VMStatus:
-        with self._domain(target, mutate=False) as (backend, vm, owner):
-            return backend.status(vm, owner)
+        with self._domain(target, mutate=False) as (backend, record, owner):
+            return backend.status(record.uuid, owner)
 
     def check_console(self, target: UUID) -> None:
-        with self._domain(target, mutate=False) as (backend, vm, owner):
-            backend.check_console(vm, owner)
+        with self._domain(target, mutate=False) as (backend, record, owner):
+            backend.check_console(record.uuid, owner, _require_base(record))
 
     def focus_status(self, target: UUID | None) -> VMStatus:
-        with self._domain(target, mutate=False) as (backend, vm, owner):
-            return backend.focus_status(vm, owner)
+        with self._domain(target, mutate=False) as (backend, record, owner):
+            return backend.focus_status(record.uuid, owner, _require_base(record))
 
     def start(self, target: UUID | None) -> VMStatus:
-        with self._domain(target, mutate=True) as (backend, vm, owner):
-            return backend.start(vm, owner)
+        with self._domain(target, mutate=True) as (backend, record, owner):
+            return backend.start(record.uuid, owner, _require_base(record))
 
     def stop(self, target: UUID | None, timeout: int) -> VMStatus:
         if not 1 <= timeout <= 3600:
             raise VMInputError("Shutdown timeout must be between 1 and 3600 seconds")
-        with self._domain(target, mutate=True) as (backend, vm, owner):
-            return backend.stop(vm, owner, timeout)
+        with self._domain(target, mutate=True) as (backend, record, owner):
+            return backend.stop(record.uuid, owner, timeout)
 
     def configure(self, target: UUID | None, cpus: int, memory_mib: int) -> VMStatus:
         resources = VMDefaults(cpus=cpus, memory_mib=memory_mib)
-        with self._domain(target, mutate=True) as (backend, vm, owner):
-            return backend.configure(vm, owner, resources.cpus, resources.memory_mib)
+        with self._domain(target, mutate=True) as (backend, record, owner):
+            return backend.configure(
+                record.uuid, owner, resources.cpus, resources.memory_mib
+            )
 
     def attach_resources(self, target: UUID | None, iso: Path) -> VMStatus:
         return self._change_resources(target, iso)
@@ -240,9 +240,9 @@ class VMService:
             record = self._check_receipts(
                 backend, inventory.owner_id, _select_vm(inventory, target)
             )
-            if record.base_key is None:
-                raise VMStateError("The VM inventory has no backing image receipt")
-            yield backend.offline_disk(record.uuid, inventory.owner_id, record.base_key)
+            yield backend.offline_disk(
+                record.uuid, inventory.owner_id, _require_base(record)
+            )
 
     def _change_resources(self, target: UUID | None, iso: Path | None) -> VMStatus:
         with file_lock(self.path), connect() as backend:
@@ -271,7 +271,7 @@ class VMService:
     @contextmanager
     def _domain(
         self, target: UUID | None, *, mutate: bool
-    ) -> Generator[tuple[LibvirtBackend, UUID, UUID]]:
+    ) -> Generator[tuple[LibvirtBackend, VMRecord, UUID]]:
         with file_lock(self.path) if mutate else nullcontext():
             inventory = self._load()
             record = _select_vm(inventory, target)
@@ -279,12 +279,16 @@ class VMService:
                 record = self._check_receipts(backend, inventory.owner_id, record)
                 if mutate:
                     self._persist_reconciled(inventory, record)
-                yield backend, record.uuid, inventory.owner_id
+                yield backend, record, inventory.owner_id
 
     def _check_receipts(
         self, backend: LibvirtBackend, owner_id: UUID, record: VMRecord
     ) -> VMRecord:
-        if record.overlay_key is None or record.seed_key is None:
+        if (
+            record.base_key is None
+            or record.overlay_key is None
+            or record.seed_key is None
+        ):
             raise VMStateError(
                 f"VM {record.uuid} has an incomplete creation record. Retry the create command."
             )
@@ -298,7 +302,7 @@ class VMService:
         backend.check_inventory(
             record.uuid, owner_id, record.overlay_key, record.seed_key, key
         )
-        return replace(record, resource_key=key, resource_change=None)
+        return replace(record, phase="ready", resource_key=key, resource_change=None)
 
     def _persist_reconciled(self, inventory: _Inventory, record: VMRecord) -> None:
         if record != inventory.records[record.uuid]:
@@ -306,11 +310,11 @@ class VMService:
 
     def _load(self) -> _Inventory:
         try:
-            with open(self.path, encoding="utf-8", opener=open_owned_file) as stream:
+            with open(self.path, encoding="utf-8", opener=open_private_file) as stream:
                 payload: object = json.load(stream)
         except FileNotFoundError:
             return _Inventory()
-        except ValueError as error:
+        except (ValueError, RecursionError) as error:
             raise VMStateError(
                 f"Could not read VM inventory {self.path}: {error}"
             ) from error
@@ -361,6 +365,12 @@ def _select_vm(inventory: _Inventory, target: UUID | None) -> VMRecord:
     raise VMInputError(
         "More than one VM is recorded. Use focusvm list, then select one with --vm UUID."
     )
+
+
+def _require_base(record: VMRecord) -> str:
+    if record.base_key is None:
+        raise VMStateError("The VM inventory has no backing image receipt")
+    return record.base_key
 
 
 def _record(value: object) -> VMRecord:

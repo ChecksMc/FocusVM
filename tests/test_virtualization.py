@@ -4,6 +4,7 @@
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
+from unittest.mock import Mock
 from uuid import UUID
 from xml.etree import ElementTree as ET
 
@@ -20,6 +21,7 @@ from focusvm.virtualization import (
     _domain_xml,
     _DriverError,
     _Libvirt,
+    _Pool,
     _serialize,
     _xml,
 )
@@ -28,6 +30,7 @@ VM_ID = UUID(int=1)
 OWNER = UUID(int=2)
 FOREIGN_OWNER = UUID(int=3)
 OVERLAY = Volume("overlay.qcow2", "overlay-key", Path("/storage/overlay.qcow2"))
+BASE = Volume("base.qcow2", "base-key", Path("/storage/base.qcow2"))
 SEED = Volume("seed.iso", "seed-key", Path("/storage/seed.iso"))
 RESOURCE_NAME = f"focusvm-{VM_ID}-resources-{'1' * 32}.iso"
 RESOURCE = Volume(RESOURCE_NAME, "resource-key", Path("/storage") / RESOURCE_NAME)
@@ -51,9 +54,12 @@ class Driver:
 
 
 class StorageVolume:
-    def __init__(self, volume: Volume, storage_format: str = "raw") -> None:
+    def __init__(
+        self, volume: Volume, storage_format: str = "raw", backing: Path | None = None
+    ) -> None:
         self.volume = volume
         self.storage_format = storage_format
+        self.backing = backing
 
     def path(self) -> str:
         return str(self.volume.path)
@@ -66,9 +72,14 @@ class StorageVolume:
 
     def XMLDesc(self, flags: int) -> str:
         assert flags == 0
-        return (
-            f"<volume><target><format type='{self.storage_format}'/></target></volume>"
-        )
+        root = ET.Element("volume")
+        target = ET.SubElement(root, "target")
+        ET.SubElement(target, "format", {"type": self.storage_format})
+        if self.backing is not None:
+            backing = ET.SubElement(root, "backingStore")
+            ET.SubElement(backing, "path").text = str(self.backing)
+            ET.SubElement(backing, "format", {"type": "qcow2"})
+        return _serialize(root)
 
     def infoFlags(self, flags: int) -> list[int]:
         assert flags == Driver.VIR_STORAGE_VOL_GET_PHYSICAL
@@ -141,6 +152,7 @@ class Connection:
         self.domain = domain
         self.define_calls = 0
         self.resource_format = "raw"
+        self.overlay_backing: Path | None = BASE.path
 
     def lookupByUUIDString(self, uuid: str) -> Domain:
         if self.domain is not None and self.domain.UUIDString() == uuid:
@@ -153,8 +165,12 @@ class Connection:
         raise DriverError()
 
     def storageVolLookupByKey(self, key: str) -> StorageVolume:
+        if key == OVERLAY.key:
+            return StorageVolume(OVERLAY, "qcow2", self.overlay_backing)
+        if key == BASE.key:
+            return StorageVolume(BASE, "qcow2")
         return StorageVolume(
-            {OVERLAY.key: OVERLAY, SEED.key: SEED, RESOURCE.key: RESOURCE}[key],
+            {SEED.key: SEED, RESOURCE.key: RESOURCE}[key],
             self.resource_format if key == RESOURCE.key else "raw",
         )
 
@@ -249,6 +265,72 @@ def test_start_can_resume_a_valid_paused_domain_after_interruption() -> None:
     assert domain.events == ["resume"]
 
 
+def test_start_supports_a_legacy_definition_with_verified_native_backing() -> None:
+    domain = Domain()
+    domain.live_xml = _domain_xml(replace(DEFINITION, base=BASE))
+    backend = Connection(domain).backend()
+
+    assert domain.inactive_xml.find("devices/disk/backingStore") is None
+    assert backend.start(VM_ID, OWNER, BASE.key).active
+    backend.check_console(VM_ID, OWNER, BASE.key)
+
+
+def test_start_checks_storage_backing_receipt_before_boot() -> None:
+    domain = Domain()
+    connection = Connection(domain)
+    connection.overlay_backing = Path("/storage/replaced-base.qcow2")
+    backend = connection.backend()
+
+    with pytest.raises(VirtualizationError, match="backing image"):
+        backend.start(VM_ID, OWNER, BASE.key)
+    assert domain.events == []
+
+
+def test_start_discards_paused_boot_with_unexpected_live_backing() -> None:
+    domain = Domain(replace(DEFINITION, base=BASE))
+    domain.live_xml = _domain_xml(replace(DEFINITION, base=BASE))
+    source = domain.live_xml.find("devices/disk/backingStore/source")
+    assert source is not None
+    source.set("file", "/storage/replaced-base.qcow2")
+    backend = Connection(domain).backend()
+
+    with pytest.raises(VirtualizationError, match="backing image"):
+        backend.start(VM_ID, OWNER, BASE.key)
+    assert domain.events == ["start-paused", "discard-paused-boot"]
+
+
+def test_interrupt_after_paused_boot_discards_guest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    domain = Domain()
+    backend = Connection(domain).backend()
+    original = domain.XMLDesc
+
+    def interrupted(flags: int) -> str:
+        if flags == 0:
+            raise KeyboardInterrupt
+        return original(flags)
+
+    monkeypatch.setattr(domain, "XMLDesc", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        backend.start(VM_ID, OWNER)
+    assert domain.events == ["start-paused", "discard-paused-boot"]
+
+
+def test_focus_rejects_disk_mirror_but_stop_remains_available() -> None:
+    domain = Domain(replace(DEFINITION, base=BASE))
+    domain.live_xml = _domain_xml(replace(DEFINITION, base=BASE))
+    domain.state = 1
+    disk = domain.live_xml.find("devices/disk")
+    assert disk is not None
+    ET.SubElement(disk, "mirror", {"type": "network"})
+    backend = Connection(domain).backend()
+
+    with pytest.raises(VirtualizationError, match="disk mirror"):
+        backend.focus_status(VM_ID, OWNER, BASE.key)
+    assert not backend.stop(VM_ID, OWNER, timeout=1).active
+
+
 def test_managed_save_prevents_start() -> None:
     domain = Domain()
     domain.saved = True
@@ -266,6 +348,22 @@ def test_focus_preflight_rejects_network_drift_even_while_stopped() -> None:
     ET.SubElement(devices, "interface", {"type": "user"})
 
     with pytest.raises(VirtualizationError, match="unexpected device"):
+        Connection(domain).backend().focus_status(VM_ID, OWNER)
+    assert domain.events == []
+
+
+@pytest.mark.parametrize(
+    "attributes", [{"port": "5901"}, {"socket": "/run/console"}, {"autoport": "yes"}]
+)
+def test_focus_preflight_rejects_spice_endpoint_attributes(
+    attributes: dict[str, str],
+) -> None:
+    domain = Domain()
+    spice = domain.inactive_xml.find("devices/graphics")
+    assert spice is not None
+    spice.attrib.update(attributes)
+
+    with pytest.raises(VirtualizationError, match="private SPICE"):
         Connection(domain).backend().focus_status(VM_ID, OWNER)
     assert domain.events == []
 
@@ -348,3 +446,31 @@ def test_resources_require_signed_layout_label_before_any_pool_access(
     arbitrary.write_bytes(b"not an ISO")
     with pytest.raises(VirtualizationError, match="finalized FocusVM resource ISO"):
         Connection(Domain()).backend().import_resource_iso("pool", VM_ID, arbitrary)
+
+
+@pytest.mark.parametrize("failure", ["interrupt", "shrink", "grow"])
+def test_upload_aborts_without_publishing_an_incomplete_volume(
+    tmp_path: Path, failure: str
+) -> None:
+    path = tmp_path / "media.iso"
+    path.write_bytes(b"disc")
+    native = Mock()
+    pool = Mock()
+    volume = pool.createXML.return_value
+    stream = native.newStream.return_value
+    stream.send.return_value = 4
+
+    def upload(*_args: object) -> None:
+        if failure == "interrupt":
+            raise KeyboardInterrupt
+        path.write_bytes(b"a" if failure == "shrink" else b"new content")
+
+    volume.upload.side_effect = upload
+    backend = LibvirtBackend(cast("_Libvirt", Driver()), cast("_Connection", native))
+    expected = KeyboardInterrupt if failure == "interrupt" else VirtualizationError
+    with path.open("rb") as source, pytest.raises(expected):
+        backend._upload_stream(cast("_Pool", pool), "media.iso", source)
+
+    stream.abort.assert_called_once_with()
+    stream.finish.assert_not_called()
+    pool.refresh.assert_not_called()
