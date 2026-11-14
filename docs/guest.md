@@ -1,6 +1,6 @@
 # Guest image and provisioning
 
-The Fedora 44 guest targets x86-64 BIOS. It contains Xfce, LightDM, a terminal, Vim, Git, GCC/G++, Make, GDB, Python with pip and virtual environments, and local man pages. First boot creates the regular `focusvm` account from the VM's NoCloud seed. The guest's tools and desktop are independent of the host desktop.
+The Fedora 44 guest targets x86-64 BIOS. It contains Xfce, LightDM, a terminal, Vim, Git, GCC/G++, Make, GDB, Python with pip and virtual environments, and offline reference tools. First boot creates the regular `focusvm` account from the VM's NoCloud seed. The guest's tools and desktop are independent of the host desktop.
 
 ## Build the base image
 
@@ -13,7 +13,7 @@ PYTHONPATH=src python3 -m guest.build \
   --iso Fedora-Server-netinst-x86_64-44-1.7.iso \
   --checksum Fedora-Server-44-1.7-x86_64-CHECKSUM \
   --fedora-keyring fedora.gpg \
-  --version fedora-44.1 --output guest-output/fedora-44.1
+  --version fedora-44.2 --output guest-output/fedora-44.2
 ```
 
 The builder verifies the installer, applies [the Kickstart recipe](../guest/fedora-44.ks) to a new disk, and compacts the result to a standalone 12 GiB virtual-capacity QCOW2. Kickstart locks root, disables SSH, configures graphical boot, and enables NoCloud and root filesystem expansion. An enlarged offline overlay runs [the guest verifier](../guest/verify.sh) before the builder emits `guest.qcow2`, `guest.json`, `packages.txt`, and `build-inputs.json`. `work/install.log` and `work/verify.log` contain the serial output. The `work` directory also retains intermediate inputs for diagnosing the build. [NoCloud data source](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html) · [QEMU disk image utility](https://www.qemu.org/docs/master/tools/qemu-img.html)
@@ -47,6 +47,6 @@ The manifest is JSON with these fields. `version` identifies the publisher's bui
 
 ## Tools and reference material
 
-Users work in guest-local directories and can create Python virtual environments and commit changes with Git while offline. The base includes man pages. Add a read-only import path for offline wheels and local HTML, PDF, and ZIM collections after the initial session workflow is stable. Use existing viewers and Kiwix where appropriate. Keep larger archives and the optional scientific Python preset separate from the default image. Controlled guest package installation belongs in an explicitly started maintenance workflow outside focus sessions.
+Users work in guest-local directories and can create Python virtual environments and commit changes with Git while offline. The base includes man pages and the GNU C++ standard library documentation. Attach a read-only disc with offline wheels or HTML, PDF, and ZIM references while the VM is stopped. The image recipe includes Atril, Firefox, and Kiwix tools. Import larger reference archives when needed. [Offline resources and synchronization](resources-and-sync.md)
 
 Run `bash /path/to/verify.sh` as `focusvm` from Xfce Terminal to repeat the checks inside a guest. The verifier uses a temporary working directory to compile and debug a sample, create a local Git commit, install a generated wheel offline, and read a local manual page. It reports `FocusVM guest verification passed.` on success.

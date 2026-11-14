@@ -39,8 +39,8 @@ Ordinary fullscreen uses the viewer's regular quit controls. Advanced kiosk inte
 
 ## Work outside a session
 
-Git commits, branches, diffs, and history work inside the offline guest. A later synchronization flow can transfer commits through an explicit Git bundle import or export and use host-side Git for a user-approved remote operation. The host keeps its Git credentials. Check the repository, remote, ref, and working state before applying updates. Preserve local changes and report divergence for the user to resolve.
+Git commits, branches, diffs, and history work inside the offline guest. Use bundles to transfer commits and run host-side fetch or push after ending the session. [Git transfer and synchronization](resources-and-sync.md#git)
 
 For dependencies, build or fetch wheels and other artifacts in a separate maintenance step, then install from local media in the guest. Python packages go in a project virtual environment. Any future networked maintenance mode requires an explicit start outside a focus session and an offline configuration check before the next session.
 
-WakaTime and a local session journal are opt-in additions. Tracking should expose the selected projects and queued activity before synchronization, use a host secret store for the API key, and support user-triggered upload outside focus sessions. The journal can record project, duration, references, and notes locally. [WakaTime offline behavior](https://wakatime.com/faq).
+WakaTime activity is opt-in and can be queued locally. It uploads only when requested after the session ends. The local session journal is planned. [WakaTime activity](resources-and-sync.md#wakatime-activity)

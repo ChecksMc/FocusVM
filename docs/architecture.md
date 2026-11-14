@@ -16,13 +16,17 @@ src/focusvm/
   virtualization.py  Libvirt connection, domain definitions, and storage
   provisioning.py    Image verification and per-VM preparation
   sessions.py        Session transitions, offline policy, and recovery
+  resources.py       Local reference library and read-only disc images
+  git_sync.py        Explicit Git bundle and host remote operations
+  guest_export.py    Read-only bundle extraction from a stopped guest
+  tracking.py        Opt-in activity queue, keyring, and WakaTime upload
   viewer.py          Local virt-viewer launch and exit handling
   gui/               PySide6 manager and first-run wizard
 guest/               Guest build recipe and image manifest tooling
 tests/               Unit, GUI, and KVM integration suites
 ```
 
-Both frontends use the shared configuration, diagnostics, VM, and session services. The core remains free of Qt imports. The Qt manager runs libvirt, session, image, and file operations on a background thread and receives results through Qt signals. Its pages cover the dashboard, VM management, settings, and focus sessions.
+Both frontends use the shared configuration, diagnostics, VM, session, and resource services. The core remains free of Qt imports. The Qt manager runs libvirt, session, image, and file operations on a background thread and receives results through Qt signals. Its pages cover the dashboard, VM management, settings, focus sessions, and offline references.
 
 Use the native `libvirt-python` bindings for management. Open `qemu:///system` explicitly and require KVM for the reference release. `virsh` is useful for host diagnostics and recovery. Require a usable system libvirt connection and a configured directory-backed storage pool. Libvirt and the host's access controls govern permission checks. The application checks for missing privileges and reports the failing operation to the user. [QEMU/KVM driver](https://libvirt.org/drvqemu.html) · [Libvirt storage pools and volumes](https://libvirt.org/storage.html)
 
@@ -34,10 +38,10 @@ The same Qt widgets and viewer launcher serve both Fedora desktop targets. Detec
 | --- | --- |
 | `$XDG_CONFIG_HOME/focusvm/config.toml` | Settings, defaults, and selected libvirt storage pool |
 | `$XDG_CONFIG_HOME/focusvm/profiles/` | User-owned profile TOML files when custom profiles ship |
-| `$XDG_STATE_HOME/focusvm/` | Local VM inventory, operation and session state, and logs |
+| `$XDG_STATE_HOME/focusvm/` | Local VM inventory, operation and session state, logs, and queued activity |
 | `$XDG_CACHE_HOME/focusvm/` | Replaceable downloads and staging data |
-| `$XDG_DATA_HOME/focusvm/` | User resources when the resource manager ships |
-| Selected libvirt pool | Verified base volumes, writable overlays, and per-VM seed media |
+| `$XDG_DATA_HOME/focusvm/` | Imported offline resources and catalog entries |
+| Selected libvirt pool | Verified base volumes, writable overlays, seed media, and reference discs |
 
 Use XDG defaults for unset paths. Keep settings and state files private to the user and cache files disposable. Store connection credentials for optional integrations in a supported system credential store. If one is unavailable, the integration can prompt for a credential for that operation or stay disabled. [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/)
 
@@ -69,6 +73,8 @@ Create defines an offline domain. Start verifies the saved definition, launches 
 
 The session service tracks one active focus session per host user and reads current domain state before it changes anything. It verifies the offline device policy before boot or adoption, launches the local viewer, and exposes recovery if viewer startup or the VM fails. End Session leaves the guest available for saving work. Stop VM shuts the guest down separately. See [Focus sessions and networking](sessions.md) and [Guest image and provisioning](guest.md).
 
+The resource service copies selected files into a private library and builds a read-only disc. A stopped VM can attach one such disc alongside its seed. The inventory records the managed volume key and the offline startup check validates both discs. Host Git remote operations, guest bundle extraction, and WakaTime upload hold the session lock while they run. Offline Git work and local activity recording remain available during a focus session. [Offline resources and synchronization](resources-and-sync.md)
+
 ## Command-line interface
 
 | Command | Status | Operation |
@@ -85,5 +91,8 @@ The session service tracks one active focus session per host user and reads curr
 | `focusvm session status`, `focusvm session reopen` | Available | Inspect the recorded session or reopen a disconnected viewer |
 | `focusvm session end` | Available | End the session and close its viewer |
 | `focusvm profiles list` | Available | List the built-in Deep Work profile |
+| `focusvm resources` | Available | Manage the library and build, attach, or eject a reference disc |
+| `focusvm sync` | Available | Exchange Git bundles or explicitly fetch or push one branch from the host |
+| `focusvm tracking` | Optional | Manage the local activity queue, credentials, and WakaTime upload |
 
 Resolve the explicit VM selection or configured default to a managed UUID. Provide plain-text errors on stderr and stable JSON output for status and diagnostics. Reserve exit codes for success, invalid input, unavailable prerequisites, and operation failure. Optional integration commands appear when their workflows are implemented.

@@ -42,6 +42,10 @@ focusvm session end
 
 **Shift+F12** releases input and **Shift+F11** toggles fullscreen. Ending the session closes its viewer and leaves the offline guest running. [Focus sessions and recovery](docs/sessions.md#start-end-and-recover)
 
+## Offline references and synchronization
+
+Import PDF, HTML, Markdown, and ZIM files in the manager’s **Resources** page. The CLI can attach a read-only reference disc, transfer Git bundles, and queue opt-in WakaTime events. [Offline resources and synchronization](docs/resources-and-sync.md)
+
 ## Design and setup
 
 - [Architecture and configuration](docs/architecture.md) covers the package structure, service boundaries, state ownership, and CLI.

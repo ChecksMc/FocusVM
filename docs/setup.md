@@ -110,6 +110,8 @@ In **Settings**, set the pool for new VMs, the default VM, creation resources, a
 
 Use **Focus Sessions** to open the selected VM in fullscreen and to reopen or end an existing session. The fullscreen viewer requires a local Wayland or X11 display and Linux pidfd support. [Focus sessions and recovery](sessions.md#start-end-and-recover)
 
+Use **Resources** to import, find, and open offline references. The CLI attaches a read-only disc to a stopped VM. Install `xorriso` on the host to build discs and use Kiwix Desktop for host ZIM viewing. [Offline resources and synchronization](resources-and-sync.md)
+
 ## Development workflow
 
 Create a virtual environment from the repository root. Phase 1 uses Python 3.12 or newer for the configuration service and CLI. The development tools are declared in `pyproject.toml`.
