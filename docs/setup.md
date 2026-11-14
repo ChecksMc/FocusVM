@@ -122,7 +122,7 @@ python3 -m venv .venv
 python -m pip install -e '.[dev,gui]'
 ruff format --check .
 ruff check .
-pyright
+python -m pyright --pythonpath "$(command -v python)"
 mypy
 QT_QPA_PLATFORM=offscreen python -m pytest --cov=focusvm --cov-report=term-missing
 python -m build
