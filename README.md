@@ -1,6 +1,6 @@
 # FocusVM
 
-FocusVM is a Linux project for practicing independent programming. Its development VM is designed to keep a terminal, tools, and local references close at hand so that reaching for AI assistance or switching tasks takes a deliberate step. You can leave a focus session at any time.
+FocusVM is a source-first technical preview for Linux developers who want to practice programming with local tools and references. It is aimed at users comfortable setting up KVM and libvirt. The host application is available separately from the guest. **There is no official signed guest download or publisher key yet.** Build and sign your own image or bring one from a publisher you trust. [Guest image guide](docs/guest.md)
 
 The PySide6 manager and CLI share settings and manage the same QEMU/KVM VMs through libvirt. The Fedora guest includes Vim, Git, C++, Python, debugging tools, and offline references. Deep Work, Contest, and Research sessions can open it fullscreen.
 
@@ -8,7 +8,7 @@ The PySide6 manager and CLI share settings and manage the same QEMU/KVM VMs thro
 
 Use an x86-64 Linux host with Python 3.12 or newer, hardware virtualization, an authorized `qemu:///system` connection, and an active directory-backed storage pool. The desktop manager uses PySide6. Fullscreen sessions use virt-viewer and local SPICE. [Host prerequisites and troubleshooting](docs/setup.md#reference-hosts)
 
-The VM and viewer recovery flow passed on Fedora 44 KDE Plasma on Wayland and on Fedora 44 GNOME Shell using a virtual Wayland monitor. A full Fedora Workstation login and physical shortcut checks are pending. Other Linux hosts with the same dependencies are compatibility candidates. [Verification record](docs/verification.md#phase-8-development-checks)
+The VM and viewer recovery flow passed on Fedora 44 KDE Plasma on Wayland and on Fedora 44 GNOME Shell using a virtual Wayland monitor. A full Fedora Workstation login and physical shortcut checks are pending. FocusVM relies on a trusted host and checks guest isolation at startup and viewer checkpoints. Host administrators retain control of the VM. [Compatibility and limitations](docs/compatibility.md) · [Security policy](SECURITY.md)
 
 ## Install and set up
 
@@ -22,7 +22,7 @@ focusvm setup
 
 `install.sh` runs as your regular user. Open **FocusVM** from the application menu or run `focusvm gui`. Use `./install.sh --cli-only` for a terminal-only installation. If your shell cannot find the command, run `~/.local/bin/focusvm setup`.
 
-`focusvm setup` checks the host and selects an active pool. Use `focusvm setup --storage-pool NAME` if you need to choose one. To create a VM, supply a QCOW2 image, its signed manifest, and a trusted publisher keyring. [Manual setup and troubleshooting](docs/setup.md) · [Build and sign a guest image](docs/guest.md)
+`focusvm setup` checks the host and selects an active pool. Use `focusvm setup --storage-pool NAME` if you need to choose one. With a signed image ready, follow the [first-session walkthrough](docs/first-session.md). [Manual setup and troubleshooting](docs/setup.md)
 
 ## Desktop manager
 
@@ -33,6 +33,8 @@ On first launch without settings, choose **Check host** and then **Save settings
 ## Uninstall
 
 End any focus session and close the manager before running `focusvm uninstall` or `./uninstall.sh`. This removes the installed app and launchers. VMs, settings, and your resource library remain available when you reinstall. [Installation details](docs/setup.md#quick-install)
+
+Before maintenance, use `focusvm backup` to copy a stopped VM's disk. Keep the original base image and VM inventory alongside your backups. [VM data and recovery](docs/guest.md#vm-data-and-recovery)
 
 ## Start a focus session
 

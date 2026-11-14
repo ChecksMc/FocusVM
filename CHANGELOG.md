@@ -5,6 +5,8 @@
 - Install FocusVM for the current user with `./install.sh`. The default installation adds a desktop menu entry. Pass `--cli-only` for a terminal installation.
 - Prepare a Fedora host with `./setup-fedora.sh`. Run `focusvm setup` or use the first-run wizard to detect a usable storage pool and save settings.
 - Remove the user-installed application with `focusvm uninstall` while keeping VMs, resources, and settings.
+- Verify a signed guest image before import with `focusvm verify-image`, export a stopped VM's standalone disk with `focusvm backup`, and share prerequisite check results with `focusvm doctor --redact --json`.
+- Check clean wheel and source installs in CI for Python 3.12 and 3.14. [Preview compatibility](docs/compatibility.md)
 
 ## 0.1.0rc1
 

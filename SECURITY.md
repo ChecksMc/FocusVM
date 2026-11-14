@@ -12,6 +12,8 @@ Strict and Balanced sessions use a guest without a network interface. The manage
 
 Git remotes, WakaTime upload, and approved research retrieval run on the host through explicit commands outside the focus session. Git uses credentials managed by the host Git installation. WakaTime tracking is opt-in and supports key storage in the desktop keyring. Reference discs are read-only in the guest. Documents and wheels still come from sources you select and run through their normal viewers or installers. [Offline resources and synchronization](docs/resources-and-sync.md) · [Advanced sessions and maintenance](docs/advanced-sessions.md)
 
+Research downloads contact the approved public HTTPS host and save a local Markdown file. WakaTime uploads send the project name, relative filename, and timestamp to `api.wakatime.com`. Unconfirmed events stay in the local queue until a successful retry or explicit removal. Review the queue before uploading. [WakaTime controls](docs/resources-and-sync.md#wakatime-activity)
+
 ## Report a vulnerability
 
 If **Report a vulnerability** is available on the repository's GitHub Security page, submit a private report there. If the option is unavailable, open an issue asking the maintainers for a private contact and keep the vulnerability details for that channel. [Repository security advisories](https://github.com/ChecksMc/FocusVM/security/advisories) · [GitHub private reporting instructions](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/report-privately)

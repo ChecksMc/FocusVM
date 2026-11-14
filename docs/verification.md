@@ -16,7 +16,7 @@ Keep package metadata, tool configuration and pytest markers in `pyproject.toml`
 
 Unit tests can substitute libvirt and the viewer at their application boundaries. Headless GUI tests check application behavior. Run real libvirt integration and Wayland viewer checks separately on hosts with the required capabilities, and record skipped checks and their reasons. A skipped required reference-host check leaves release verification incomplete. [pytest skip reporting](https://docs.pytest.org/en/stable/how-to/skipping.html)
 
-Run the development checks in CI on the minimum supported Python version. Include dependency audits, dependency update checks and static security checks. Use read-only workflow permissions for routine validation and keep release credentials out of jobs that execute pull request code.
+CI tests Python 3.12 and 3.14 and requires 75% coverage with branch measurement enabled. Its package check builds from a clean Git archive, checks the archive contents, and installs both distributions in separate environments. The hosted workflow covers package and offscreen Qt tests. Native KVM and Wayland checks use the manual record below.
 
 ## Acceptance by milestone
 
@@ -56,6 +56,20 @@ The Qt manager and CLI completed Strict and Balanced session checks using dispos
 
 The desktop smoke checks used a small disposable boot image. The Fedora development image is exercised separately with its offline development and resource checks.
 
+## Manual acceptance record
+
+For each candidate, run the reference checks on both Fedora desktop logins. Repeat them when changing the guest recipe, Qt, QEMU, libvirt, or viewer versions. Launch a disposable VM from a verified guest and use the manager and CLI to check start, input release, fullscreen toggle, disconnect, reopen, session end, and graceful shutdown. Verify that the guest has no external interface after boot. In a separate trial, exercise the package and resource workflows. Record `pass`, `fail`, or `pending` with a reason and attach a scrubbed transcript to the release review.
+
+| Record | Value to capture |
+| --- | --- |
+| Build | Exact commit/tag, wheel checksum, guest version and QCOW2 checksum |
+| Environment | Fedora release and desktop, session type, Python, Qt, libvirt, QEMU and viewer versions |
+| Core flow | Create, verify offline boot, use and release input, recover the viewer, end, stop |
+| Offline tools | Guest verification, selected reference media, local Git and wheel install |
+| Failures and skipped checks | State and reason, with the relevant redacted diagnostics |
+
+Use `focusvm doctor --redact --json` for the shareable check summary. Review separate command traces and omit guest data, usernames, credentials, and local paths.
+
 ### 0.1.0rc1 candidate checks
 
 The local Python 3.12.16 workflow passed 191 tests, Ruff, Mypy, Pyright, and the dependency audit. On Fedora 44 KDE Wayland, the installed candidate wheel imported the Fedora 44.2 development image using a disposable test signature. The manager and CLI booted it offline, reopened the fullscreen viewer after it closed, ended the session, and shut down the guest separately. The development image SHA-256 is `546968488fe44834d6aae4c489a1e935ac110d6ff5a052d89ea58c868c2793c5`.
@@ -66,4 +80,4 @@ A hosted GitHub Actions result for the candidate and the full Fedora Workstation
 
 For a release candidate, build from the intended version tag and verify installation from the resulting artifacts. Record CI results, the real KVM and desktop results for both reference hosts, guest image verification, artifact checksums and known limitations. Retain only diagnostics that are suitable to share, with credentials and personal paths removed.
 
-Publish the compatibility actually exercised, along with installation instructions, release notes, and applicable licensing information. The intended application license is MIT. Before distribution, confirm the copyright attribution and include the required notices for the guest and other bundled components. Other compatible Linux hosts can be listed as expected to work where their dependencies are available. Release requires a successful core workflow on both Fedora targets, passing automated checks, and resolution of known critical security or data-loss defects. Keep the Python package and the verified guest image separately versioned and document which guest version was tested with the release.
+Publish the compatibility actually exercised, along with installation instructions, release notes, and applicable licensing information. The host application uses MIT. Include the required notices for any distributed guest. A general-use release requires a successful core workflow on both Fedora targets, passing automated checks, and resolution of known critical security or data-loss defects. Keep the Python package and the verified guest image separately versioned and document which guest version was tested with the release.

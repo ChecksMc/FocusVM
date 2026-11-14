@@ -90,6 +90,8 @@ The resource service copies selected files into a private library and builds a r
 | `focusvm setup [--storage-pool NAME]` | Available | Find or select a pool, check the host, and save initial settings |
 | `focusvm config validate` | Available | Check the current configuration |
 | `focusvm doctor [--json]` | Available | Check host dependencies, KVM, libvirt access, storage, and desktop capabilities |
+| `focusvm verify-image` | Available | Verify a signed guest and disk integrity before VM creation |
+| `focusvm backup` | Available | Export a stopped VM disk as a standalone QCOW2 |
 | `focusvm gui` | Available with the `gui` extra | Open the manager and launch setup when settings are absent |
 | `focusvm create` | Available | Create an offline domain and per-VM overlay from a verified local image |
 | `focusvm list` | Available | List VM UUIDs and creation phases from the local inventory |
@@ -107,3 +109,13 @@ The resource service copies selected files into a private library and builds a r
 | `focusvm journal` | Optional | Write, list, remove, and summarize local session entries |
 
 Resolve the explicit VM selection or configured default to a managed UUID. Provide plain-text errors on stderr and stable JSON output for status and diagnostics. Reserve exit codes for success, invalid input, unavailable prerequisites, and operation failure. Optional integration commands appear when their workflows are implemented.
+
+## Recovery transitions
+
+| Record or event | Next step |
+| --- | --- |
+| VM creation receipt is pending and a matching domain exists | Validate the recorded volumes and definition and reuse the existing VM. |
+| Creation is pending and the domain is absent | Mark the attempt abandoned, preserve its storage, and retry with a fresh UUID. |
+| A focus viewer exits with the VM still running | Report a disconnected session. Reopen with the same session settings or end it from a host terminal. |
+| Offline checks fail or the VM cannot be inspected | Report the unresolved session and inspect diagnostics before reconnecting. |
+| The user ends a session | Close the viewer. Use a separate graceful stop to shut down the VM. |

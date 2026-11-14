@@ -59,6 +59,17 @@ printf 'Session type: %s\nDesktop: %s\n' \
 
 See the [libvirt daemon guide](https://libvirt.org/daemons.html), [client authorization guide](https://libvirt.org/acl.html), [QEMU storage permissions](https://libvirt.org/drvqemu.html#posix-users-groups), and [domain capability format](https://libvirt.org/formatdomaincaps.html#graphical-framebuffers).
 
+## Troubleshooting
+
+Run `focusvm doctor` first, then start with the first failed prerequisite.
+
+1. **Libvirt connection fails.** In your desktop terminal, run `virsh --connect qemu:///system list --all`. An authorization error needs your administrator or desktop policy. If the socket is missing, check the libvirt services for your host layout. If the Python binding is missing, try `python3 -c 'import libvirt'` using the system interpreter and reinstall FocusVM with that interpreter.
+2. **KVM or SPICE fails.** Check `virt-host-validate qemu`. Enable hardware virtualization if KVM is missing. If the QEMU capability check reports missing SPICE, install the distribution's SPICE-enabled QEMU components.
+3. **Storage pool fails.** Use `virsh --connect qemu:///system pool-list --all --details` to check the selected pool. Check free space, service access to the directory, and its SELinux labels. Native libvirt access and labeling belong to the host administrator.
+4. **Viewer fails.** Run `focusvm doctor` from a local Wayland or X11 terminal. Use `focusvm session status` and read the viewer log named in the output. Reopen the session once the viewer is working. End the session from a host terminal if you cannot use the window.
+
+To share diagnostic check results without paths or host-specific error text, run `focusvm doctor --redact --json > focusvm-doctor.json`. Share the JSON after reviewing it. The unredacted output and raw viewer or libvirt logs may contain local paths and identifiers.
+
 ## Prepare a storage pool
 
 Use an active directory-backed libvirt storage pool that the desktop user is authorized to use. Setup prefers an active pool named `focusvm`, then `default`, then a single remaining suitable pool. If several other pools are available, choose one by name. The pool holds the verified read-only guest base and each VM's writable QCOW2 overlay. Leave room for the overlay to grow as files are written in the guest. [Libvirt storage management](https://libvirt.org/storage.html#directory-pool) · [QEMU disk images](https://www.qemu.org/docs/master/system/images.html)

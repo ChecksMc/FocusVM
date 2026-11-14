@@ -18,7 +18,20 @@ PYTHONPATH=src python3 -m guest.build \
 
 The builder verifies the installer, applies [the Kickstart recipe](../guest/fedora-44.ks) to a new disk, and compacts the result to a standalone 12 GiB virtual-capacity QCOW2. Kickstart locks root, disables SSH, configures graphical boot, and enables NoCloud and root filesystem expansion. An enlarged offline overlay runs [the guest verifier](../guest/verify.sh) before the builder emits `guest.qcow2`, `guest.json`, `packages.txt`, and `build-inputs.json`. `work/install.log` and `work/verify.log` contain the serial output. The `work` directory also retains intermediate inputs for diagnosing the build. [NoCloud data source](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html) · [QEMU disk image utility](https://www.qemu.org/docs/master/tools/qemu-img.html)
 
-For import, add `--sign-with FINGERPRINT` to produce `guest.sig` with an available OpenPGP signing key. Export that key's public certificate in a binary keyring and give the importer a trusted copy. The unsigned output is useful for build inspection. The repository has no published image or project signing key yet.
+## Sign and verify
+
+The repository has no published signed image or project signing key. For your own build, select a dedicated signing-capable OpenPGP key by its full fingerprint. Keep the private key and recovery material separate from the build output. You can add `--sign-with FINGERPRINT` to the build command, or sign an existing build you produced and verified.
+
+```sh
+cd guest-output/fedora-44.2
+fingerprint=YOUR_FULL_SIGNING_KEY_FINGERPRINT
+gpg --local-user "$fingerprint" --detach-sign --output guest.sig guest.json
+gpg --export "$fingerprint" > trusted.gpg
+focusvm verify-image --image guest.qcow2 --manifest guest.json \
+  --signature guest.sig --keyring trusted.gpg
+```
+
+When using the build flag, reuse its `guest.sig` and run the export and verification commands. If you obtain an image from another publisher, get their authorized public key or its full fingerprint through a separate channel you trust. Compare the fingerprint before using the key. For a compressed download, check its distribution checksum, decompress the QCOW2, and run `verify-image` on the decompressed file. This verifies the manifest signature, image digest, format, virtual size, and QCOW2 consistency without connecting to libvirt or creating a VM. It needs temporary space for a private image copy. [GnuPG signing and key export](https://gnupg.org/documentation/manuals/gnupg/Operational-GPG-Commands.html) · [Guest publication procedure](release.md#prepare-the-guest-separately)
 
 ## Prepare a VM
 
@@ -29,7 +42,21 @@ The CLI and desktop manager use the same local image provisioning service.
 3. Generate a private NoCloud seed with the domain's unique instance ID and a password hash for the `focusvm` guest user. The CLI prompts without echo and the desktop manager masks the input. The hash tool receives the password on standard input. The VM keeps the seed attached read-only for retries. [NoCloud local seed media](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html)
 4. Define the guest with the overlay and seed, local SPICE graphics, and no NIC. First-boot account configuration and filesystem growth depend on the chosen guest image's cloud-init and partition layout. An interrupted first boot preserves the overlay for diagnosis or retry.
 
-Releasing a new base image creates a new version for new VMs. Existing overlays continue to use the exact base they were built on. Provide an export or backup path before adding migrations between base versions. During development, test rebuilds against disposable overlays and keep user data outside test volumes.
+Releasing a new base image creates a new version for new VMs. Existing overlays continue to use the exact base they were built on. During development, test rebuilds against disposable overlays and keep user data outside test volumes.
+
+## VM data and recovery
+
+The app keeps its inventory and settings in the XDG directories and disks and media in libvirt. Reinstalling or uninstalling the app preserves both. A shutdown timeout leaves the guest running. Resolve the shutdown before accessing its disk. Managed VM deletion and in-place restore are unavailable.
+
+End the focus session and shut down the VM before exporting a disk copy. Choose an existing output directory with enough space and a new filename. Your user needs read access to the overlay and its base image under the host's storage policy.
+
+```sh
+focusvm session end
+focusvm stop --vm VM_UUID
+focusvm backup --vm VM_UUID --output /path/to/practice-backup.qcow2
+```
+
+The exported QCOW2 contains the disk's current contents without a backing file. It excludes the VM definition, inventory, seed, resource discs, and snapshots. Store the copy privately because it contains your guest data. Preserve the matching inventory and base image for recovery of the original VM. To use the copy with libvirt, create a separate recovery VM and leave the managed overlay and its base untouched. [QEMU disk image utility](https://www.qemu.org/docs/master/tools/qemu-img.html) · [FocusVM storage paths](architecture.md#settings-runtime-state-and-storage)
 
 ## Phase 2 image manifest
 

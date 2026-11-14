@@ -1,17 +1,17 @@
 # Preparing and publishing a release
 
-The first release candidate is `0.1.0rc1` with the Git tag `v0.1.0rc1`. The host application and the Fedora guest image have separate versions. The application distribution contains the CLI and optional Qt manager. The guest image is built separately. [Python package version specifiers](https://packaging.python.org/en/latest/specifications/version-specifiers/)
+The first release candidate is `0.1.0rc1` with the Git tag `v0.1.0rc1`. This is a source-first preview for the host CLI and desktop manager. The Fedora guest is a separately versioned build. [Python package version specifiers](https://packaging.python.org/en/latest/specifications/version-specifiers/)
 
 ## Validate the release commit
 
 1. Check that `focusvm --version` and the [changelog](../CHANGELOG.md) agree. Review the release changes and license files, then select the exact commit to tag.
 2. Run the local lint, strict typing, test, and build checks. Record the desktop, KVM, and guest acceptance results for the selected revision. The [verification checklist](verification.md) defines the reference-host checks.
-3. Create the annotated tag with `git tag -a v0.1.0rc1 -m 'FocusVM 0.1.0rc1' COMMIT`, replacing `COMMIT` with the reviewed commit hash. If a candidate needs changes after sharing, prepare a new candidate version and tag.
-4. Before publishing, confirm a successful GitHub Actions run for the exact commit and complete the reference checks on both Fedora desktop logins. Record any optional checks that remain unverified in the changelog. A build, tag, or draft can be prepared while these checks are pending. [Viewing GitHub Actions runs](https://docs.github.com/en/actions/how-tos/monitor-workflows/view-workflow-run-history)
+3. Create an annotated tag for the reviewed version and commit. For changes after a tag exists, prepare a new candidate version and tag.
+4. Before publishing, confirm a successful GitHub Actions run for the exact commit. Include the reference checks and pending results in release notes. A general-use release needs both Fedora desktop logins and physical viewer controls verified. [Viewing GitHub Actions runs](https://docs.github.com/en/actions/how-tos/monitor-workflows/view-workflow-run-history) · [Manual acceptance record](verification.md#manual-acceptance-record)
 
 ## Build and check the Python artifacts
 
-Use a development environment with the `build` package installed. Run these commands from the repository root after creating the candidate tag. The archive gives `build` the tracked files at that tag. [PyPA build](https://build.pypa.io/en/stable/)
+Use a development environment with the `build` package installed. Run these commands from the repository root after creating the candidate tag, with no older wheel or source archive in `dist`. Replace the example version with the candidate's version. The archive gives `build` the tracked files at that tag. Use the current checkout for the archive validator. [PyPA build](https://build.pypa.io/en/stable/)
 
 ```sh
 set -eu
@@ -21,6 +21,7 @@ mkdir "$stage/source"
 git archive --format=tar --output="$stage/source.tar" "v$version"
 tar -xf "$stage/source.tar" -C "$stage/source"
 python -m build --outdir "$PWD/dist" "$stage/source"
+python -m scripts.check_distribution "$PWD/dist"
 (
   cd dist
   sha256sum "focusvm-$version-py3-none-any.whl" "focusvm-$version.tar.gz" > SHA256SUMS
@@ -56,7 +57,7 @@ done
 
 ## Prepare the guest separately
 
-The Fedora `fedora-44.2` development build is unsigned. Use the [guest build guide](guest.md) to build and verify a local guest. Before redistributing a guest, review Fedora's trademark guidance and the applicable software licenses for the package set. Sign `guest.json` using the publisher's OpenPGP key and distribute its public key through a trusted channel. Keep the package inventory and build inputs with the image record. [Fedora distribution guidance](https://fedoraproject.org/wiki/Distribution)
+The Fedora `fedora-44.2` development build is unsigned. Use the [guest build guide](guest.md) to build and verify a local guest. Before redistributing any guest version, record the source and license obligations for its package set, confirm the applicable Fedora trademark terms, and retain the package inventory and build inputs. Sign `guest.json` using the publisher's OpenPGP key. Publish verified checksums for the exact assets, and provide the public key or its fingerprint through an independently trusted channel. Record the source commit, installer digest, guest digest, key fingerprint, and verification results together. [Fedora distribution guidance](https://fedoraproject.org/wiki/Distribution)
 
 Keep the uncompressed `guest.qcow2` digest in `guest.json`. If the image is distributed as a compressed archive, record a separate checksum for the download and decompress it before importing. Check that the decompressed image matches the signed manifest and that a disposable VM can import and boot it. GitHub requires individual release assets to be smaller than 2 GiB. Use a compressed file within that limit or host the guest separately. [GitHub release asset limits](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#storage-and-bandwidth-quotas)
 
