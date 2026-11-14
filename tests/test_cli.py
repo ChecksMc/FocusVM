@@ -13,7 +13,7 @@ from focusvm import __version__
 from focusvm.cli import main
 from focusvm.config import ConfigPaths, ConfigStore, Settings, VMDefaults
 from focusvm.diagnostics import Diagnostic
-from focusvm.provisioning import ImageInput
+from focusvm.provisioning import ImageInput, VerifiedImage
 from focusvm.sessions import DEFAULT_NETWORK, PROFILE_ID, FocusSession, SessionError
 from focusvm.viewer import ViewerError
 from focusvm.virtualization import VirtualizationUnavailable, VMStatus
@@ -109,6 +109,65 @@ def test_doctor_json_reports_missing_prerequisites(
     assert json.loads(capsys.readouterr().out) == [
         {"name": "libvirt", "status": "error", "detail": "Unavailable"}
     ]
+
+
+def test_doctor_redacts_report_details(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with patch(
+        "focusvm.cli.diagnose_configured",
+        return_value=[Diagnostic("libvirt", "error", f"Cannot open {tmp_path}/secret")],
+    ):
+        assert main(["doctor", "--redact", "--json"]) == 3
+    payload = capsys.readouterr().out
+    assert "secret" not in payload
+    assert json.loads(payload)[0]["name"] == "libvirt"
+
+
+def test_verify_image_without_vm_or_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    with (
+        patch("focusvm.cli.stage_image") as stage,
+        patch("focusvm.cli.VMService") as vm,
+    ):
+        stage.return_value.__enter__.return_value = VerifiedImage(
+            tmp_path, "a" * 64, 2**20, "test"
+        )
+        assert (
+            main(
+                [
+                    "verify-image",
+                    "--image",
+                    "guest.qcow2",
+                    "--manifest",
+                    "guest.json",
+                    "--signature",
+                    "guest.sig",
+                    "--keyring",
+                    "trusted.gpg",
+                    "--json",
+                ]
+            )
+            == 0
+        )
+    stage.assert_called_once_with(
+        ImageInput(
+            Path("guest.qcow2"),
+            Path("guest.json"),
+            Path("guest.sig"),
+            Path("trusted.gpg"),
+        ),
+        staging_dir=tmp_path / "cache" / "focusvm",
+    )
+    vm.assert_not_called()
+    assert json.loads(capsys.readouterr().out) == {
+        "version": "test",
+        "sha256": "a" * 64,
+        "virtual_size_bytes": 2**20,
+    }
 
 
 @pytest.mark.parametrize(
@@ -407,6 +466,7 @@ def test_resource_library_cli_uses_data_home(
             "sync_remote",
         ),
         (["tracking", "sync", "--prompt-key"], "_hidden_input"),
+        (["backup", "--output", "backup.qcow2"], "VMService.offline_disk"),
         (
             ["research", "save", "https://example.org", "--output", "reference.md"],
             "Research.save",

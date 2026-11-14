@@ -282,7 +282,9 @@ class MainWindow(QMainWindow):
         layout.addLayout(form)
         layout.addWidget(
             _label(
-                "sessionNetworkHelp", "Balanced and Strict both run the guest offline."
+                "sessionNetworkHelp",
+                "Balanced and Strict start the guest without a network interface. "
+                "Host administrators retain control of VM devices.",
             )
         )
         self.session_status = _label("sessionStatus", "Reading focus session status…")

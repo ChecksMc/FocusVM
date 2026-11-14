@@ -15,8 +15,9 @@ from typing import Literal
 from uuid import UUID
 
 from . import __version__
+from .backup import BackupError, backup_disk
 from .config import ConfigError, ConfigPaths, ConfigStore, Settings, VMDefaults
-from .diagnostics import diagnose_configured
+from .diagnostics import diagnose_configured, redact_diagnostics
 from .git_sync import (
     GitSyncError,
     GitSyncInputError,
@@ -30,7 +31,12 @@ from .journal import Journal, JournalEntry, JournalError, JournalInputError
 from .local_state import PrivateFileError
 from .packages import PackageInputError, build_wheel_media
 from .profiles import PROFILES
-from .provisioning import ImageInput, ProvisioningError, ProvisioningUnavailable
+from .provisioning import (
+    ImageInput,
+    ProvisioningError,
+    ProvisioningUnavailable,
+    stage_image,
+)
 from .research import Research, ResearchError, ResearchInputError
 from .resources import Resource, ResourceError, ResourceLibrary, ResourceUnavailable
 from .sessions import (
@@ -67,6 +73,8 @@ class _Arguments(argparse.Namespace):
         "config",
         "doctor",
         "create",
+        "verify-image",
+        "backup",
         "list",
         "start",
         "stop",
@@ -85,6 +93,7 @@ class _Arguments(argparse.Namespace):
     session_command: Literal["start", "status", "reopen", "end"]
     storage_pool: str
     setup_pool: str | None
+    redact: bool
     json: bool
     name: str
     image: Path
@@ -176,25 +185,31 @@ def _parser() -> argparse.ArgumentParser:
         "doctor", help="Check local virtualization prerequisites"
     )
     _json_option(doctor)
+    doctor.add_argument(
+        "--redact",
+        action="store_true",
+        help="Omit host-specific details from the report",
+    )
     create = commands.add_parser(
         "create", help="Define an offline VM from a signed local image"
     )
     create.add_argument("--name", required=True, help="Name for the new VM")
-    create.add_argument(
-        "--image", type=Path, required=True, help="Local guest QCOW2 image"
-    )
-    create.add_argument(
-        "--manifest", type=Path, required=True, help="Signed image manifest (JSON)"
-    )
-    create.add_argument(
-        "--signature", type=Path, required=True, help="Detached OpenPGP signature"
-    )
-    create.add_argument(
-        "--keyring", type=Path, required=True, help="Trusted binary OpenPGP keyring"
-    )
+    _image_options(create)
     _resource_options(create, required=False)
     create.add_argument("--disk-gib", type=int, help="Virtual disk size in GiB")
     _json_option(create)
+    verify_image = commands.add_parser(
+        "verify-image", help="Verify guest image inputs without connecting to libvirt"
+    )
+    _image_options(verify_image)
+    _json_option(verify_image)
+    backup = commands.add_parser(
+        "backup", help="Export a standalone disk copy of a stopped VM"
+    )
+    _vm_options(backup)
+    backup.add_argument(
+        "--output", type=Path, required=True, help="New QCOW2 output path"
+    )
 
     listing = commands.add_parser(
         "list", help="List locally recorded VMs and creation attempts"
@@ -429,6 +444,21 @@ def _vm_options(parser: argparse.ArgumentParser) -> None:
     _json_option(parser)
 
 
+def _image_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--image", type=Path, required=True, help="Local guest QCOW2 image"
+    )
+    parser.add_argument(
+        "--manifest", type=Path, required=True, help="Signed image manifest (JSON)"
+    )
+    parser.add_argument(
+        "--signature", type=Path, required=True, help="Detached OpenPGP signature"
+    )
+    parser.add_argument(
+        "--keyring", type=Path, required=True, help="Trusted binary OpenPGP keyring"
+    )
+
+
 def _resource_options(parser: argparse.ArgumentParser, *, required: bool) -> None:
     parser.add_argument(
         "--cpus", type=int, required=required, help="Number of virtual CPUs"
@@ -475,6 +505,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ViewerError,
         GitSyncError,
         GuestExportError,
+        BackupError,
         TrackingError,
         JournalError,
         ResearchError,
@@ -537,6 +568,8 @@ def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
 
     if args.command == "doctor":
         diagnostics = diagnose_configured(paths)
+        if args.redact:
+            diagnostics = redact_diagnostics(diagnostics)
         if args.json:
             print(json.dumps([asdict(item) for item in diagnostics]))
         else:
@@ -548,7 +581,32 @@ def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
             else 0
         )
 
+    if args.command == "verify-image":
+        source = ImageInput(args.image, args.manifest, args.signature, args.keyring)
+        with stage_image(source, staging_dir=paths.cache_dir) as verified:
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "version": verified.version,
+                            "sha256": verified.sha256,
+                            "virtual_size_bytes": verified.virtual_size_bytes,
+                        }
+                    )
+                )
+            else:
+                print(f"Verified {verified.version} ({verified.sha256})")
+        return 0
+
     service = VMService(paths.state_dir, paths.cache_dir)
+    if args.command == "backup":
+        sessions = SessionService(paths.state_dir, service)
+        with (
+            sessions.outside_session(),
+            service.offline_disk(_target_vm(args.vm, store)) as disk,
+        ):
+            _print_output(backup_disk(disk, args.output), args.json)
+        return 0
     if args.command in ("packages", "research"):
         sessions = SessionService(paths.state_dir, service)
         if args.command == "research":

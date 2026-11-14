@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import stat
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -14,6 +15,29 @@ from .viewer import check_viewer_prerequisites, local_display_backend
 from .virtualization import VirtualizationError, VirtualizationUnavailable, connect
 
 type DiagnosticStatus = Literal["ok", "warning", "error"]
+
+_REQUIRED_TOOLS = {
+    "qemu-img": "qemu-img",
+    "gpgv": "gnupg2-verify",
+    "openssl": "openssl",
+    "xorriso": "xorriso",
+}
+_SHAREABLE_DETAILS = {
+    "architecture": "x86-64 host architecture",
+    "configuration": "FocusVM settings",
+    "kvm_device": "Local KVM device visibility",
+    "config_directory": "Configuration directory access",
+    "state_directory": "State directory access",
+    "cache_directory": "Cache directory access",
+    "data_directory": "Data directory access",
+    "libvirt": "System libvirt connection",
+    "vm_capabilities": "KVM and local SPICE support",
+    "storage_pool": "Directory storage pool readiness",
+    "desktop": "Local graphical session",
+    "focus_viewer": "Focus viewer prerequisites",
+    "guest_image": "Signed guest image required separately",
+    **{tool: "Executable availability" for tool in (*_REQUIRED_TOOLS, "virt-viewer")},
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +65,7 @@ def diagnose(paths: ConfigPaths, storage_pool: str | None) -> list[Diagnostic]:
         _check_directory("data_directory", paths.data_dir),
     ]
     checks.extend(_check_libvirt(storage_pool))
-    for command in ("qemu-img", "gpgv", "openssl", "xorriso"):
+    for command in _REQUIRED_TOOLS:
         checks.append(_check_command(command, required=True))
     checks.extend(
         (
@@ -51,7 +75,8 @@ def diagnose(paths: ConfigPaths, storage_pool: str | None) -> list[Diagnostic]:
             Diagnostic(
                 "guest_image",
                 "warning",
-                "Provide a local QCOW2 image, signed manifest, and trusted keyring to create a VM.",
+                "Provide a local QCOW2 image, signed manifest, signature, and trusted keyring. "
+                "See the guest build guide before creating a VM.",
             ),
         )
     )
@@ -75,6 +100,18 @@ def diagnose_configured(paths: ConfigPaths) -> list[Diagnostic]:
             *diagnose(paths, settings.application.storage_pool),
         ]
     return [configuration, *diagnose(paths, None)]
+
+
+def redact_diagnostics(checks: Sequence[Diagnostic]) -> list[Diagnostic]:
+    """Keep known check identifiers and results, excluding all raw details."""
+    return [
+        Diagnostic(
+            item.name if item.name in _SHAREABLE_DETAILS else "check",
+            item.status,
+            _SHAREABLE_DETAILS.get(item.name, "Host prerequisite"),
+        )
+        for item in checks
+    ]
 
 
 def _check_kvm_device(path: Path) -> Diagnostic:
@@ -142,7 +179,12 @@ def _check_libvirt(storage_pool: str | None) -> list[Diagnostic]:
             try:
                 backend.check_capabilities()
             except VirtualizationError as error:
-                checks.append(Diagnostic("vm_capabilities", "error", str(error)))
+                detail = str(error)
+                if "spice" in detail.casefold():
+                    detail += ". Install a QEMU build with SPICE support, such as qemu-ui-spice-core on Fedora."
+                else:
+                    detail += ". Check CPU virtualization or nested KVM, then run virt-host-validate qemu."
+                checks.append(Diagnostic("vm_capabilities", "error", detail))
             else:
                 checks.append(
                     Diagnostic(
@@ -157,29 +199,58 @@ def _check_libvirt(storage_pool: str | None) -> list[Diagnostic]:
                     Diagnostic(
                         "storage_pool",
                         "warning",
-                        "Run focusvm init --storage-pool NAME to select a directory pool.",
+                        "Run focusvm setup to find a usable pool, or focusvm setup --storage-pool NAME to choose one.",
                     )
                 )
             else:
                 try:
                     pool = backend.pool_status(storage_pool)
                 except VirtualizationError as error:
-                    checks.append(Diagnostic("storage_pool", "error", str(error)))
+                    checks.append(
+                        Diagnostic(
+                            "storage_pool",
+                            "error",
+                            f"{error}. Run virsh --connect qemu:///system pool-list --all "
+                            "and confirm the configured pool is an active directory pool.",
+                        )
+                    )
                 else:
                     available = f"{pool.available_bytes:,} bytes available"
                     status: DiagnosticStatus = (
                         "ok" if pool.available_bytes > 0 else "error"
                     )
+                    if status == "error":
+                        available += ". Free space in the pool or choose another pool in Settings"
                     checks.append(
                         Diagnostic("storage_pool", status, f"{pool.name}: {available}.")
                     )
             return checks
     except VirtualizationError as error:
         return [
-            Diagnostic("libvirt", "error", str(error)),
+            Diagnostic("libvirt", "error", _libvirt_help(str(error))),
             Diagnostic("vm_capabilities", "warning", "Requires a libvirt connection."),
             Diagnostic("storage_pool", "warning", "Requires a libvirt connection."),
         ]
+
+
+def _libvirt_help(detail: str) -> str:
+    message = detail.casefold()
+    if "python bindings" in message:
+        hint = (
+            "On Fedora, install python3-libvirt and use the system Python or a "
+            "virtual environment created with --system-site-packages."
+        )
+    elif any(word in message for word in ("permission", "denied", "auth", "timeout")):
+        hint = (
+            "Run FocusVM from your regular desktop session and check access with "
+            "virsh --connect qemu:///system list. Ask your administrator about libvirt authorization."
+        )
+    else:
+        hint = (
+            "On hosts using systemd, check with systemctl status virtqemud.socket "
+            "virtstoraged.socket or systemctl status libvirtd.socket libvirtd.service."
+        )
+    return f"{detail.rstrip('.')}. {hint}"
 
 
 def _check_command(name: str, *, required: bool) -> Diagnostic:
@@ -187,7 +258,12 @@ def _check_command(name: str, *, required: bool) -> Diagnostic:
     if path:
         return Diagnostic(name, "ok", path)
     status: DiagnosticStatus = "error" if required else "warning"
-    return Diagnostic(name, status, f"Install {name} and make it available on PATH.")
+    package = _REQUIRED_TOOLS.get(name, name)
+    return Diagnostic(
+        name,
+        status,
+        f"Install {name} and make it available on PATH. On Fedora, use sudo dnf install {package}.",
+    )
 
 
 def _check_desktop() -> Diagnostic:

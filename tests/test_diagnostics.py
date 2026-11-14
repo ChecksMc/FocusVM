@@ -8,7 +8,12 @@ import pytest
 
 from focusvm import diagnostics
 from focusvm.config import ConfigPaths
-from focusvm.diagnostics import Diagnostic, diagnose, diagnose_configured
+from focusvm.diagnostics import (
+    Diagnostic,
+    diagnose,
+    diagnose_configured,
+    redact_diagnostics,
+)
 from focusvm.virtualization import PoolStatus, VirtualizationError
 
 
@@ -80,9 +85,11 @@ def test_doctor_keeps_capability_and_pool_errors_separate(
     checks = _run(tmp_path, "missing")
 
     assert checks["libvirt"].status == "ok"
-    assert checks["vm_capabilities"].detail == "KVM unavailable to libvirt"
+    assert checks["vm_capabilities"].detail.startswith("KVM unavailable to libvirt")
+    assert "virt-host-validate qemu" in checks["vm_capabilities"].detail
     assert checks["vm_capabilities"].status == checks["storage_pool"].status == "error"
     assert "missing" in checks["storage_pool"].detail
+    assert "pool-list --all" in checks["storage_pool"].detail
 
 
 def test_doctor_reports_blocked_paths_and_optional_tools(
@@ -110,7 +117,9 @@ def test_doctor_reports_blocked_paths_and_optional_tools(
     assert checks["cache_directory"].status == "error"
     assert checks["state_directory"].status == "ok"
     assert checks["storage_pool"].status == "error"
+    assert "Free space" in checks["storage_pool"].detail
     assert checks["qemu-img"].status == "error"
+    assert "sudo dnf install gnupg2-verify" in checks["gpgv"].detail
     assert checks["virt-viewer"].status == checks["desktop"].status == "warning"
 
 
@@ -123,7 +132,7 @@ def test_doctor_warns_when_no_pool_is_configured(
     checks = _run(tmp_path, None)
 
     assert checks["storage_pool"].status == "warning"
-    assert "focusvm init" in checks["storage_pool"].detail
+    assert "focusvm setup" in checks["storage_pool"].detail
 
 
 def test_doctor_continues_other_checks_after_connection_failure(
@@ -140,6 +149,7 @@ def test_doctor_continues_other_checks_after_connection_failure(
 
     assert checks["libvirt"].status == "error"
     assert "Cannot connect" in checks["libvirt"].detail
+    assert "systemctl status virtqemud.socket" in checks["libvirt"].detail
     assert (
         checks["vm_capabilities"].status == checks["storage_pool"].status == "warning"
     )
@@ -195,3 +205,39 @@ def test_doctor_reports_stale_display_and_unavailable_pidfd(
     checks = _run(tmp_path, "focusvm")
     assert checks["desktop"].status == "ok"
     assert "pidfd unavailable" in checks["focus_viewer"].detail
+
+
+@pytest.mark.parametrize(
+    ("message", "hint"),
+    [
+        ("Cannot connect to qemu:///system: permission denied", "administrator"),
+        ("Cannot connect to qemu:///system: Timeout was reached", "desktop session"),
+        ("Install the libvirt Python bindings", "python3-libvirt"),
+    ],
+)
+def test_doctor_suggests_next_steps_for_libvirt_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message: str, hint: str
+) -> None:
+    def no_connection() -> None:
+        raise VirtualizationError(message)
+
+    _host_tools(monkeypatch)
+    monkeypatch.setattr(diagnostics, "connect", no_connection)
+    assert hint in _run(tmp_path, "focusvm")["libvirt"].detail
+
+
+def test_shareable_diagnostics_only_use_fixed_details() -> None:
+    private = [
+        Diagnostic("configuration", "error", "/home/example/private/config.toml"),
+        Diagnostic("libvirt", "error", "Backend provided an unexpected raw message"),
+        Diagnostic("storage_pool", "ok", "A confidential pool name"),
+        Diagnostic("desktop", "ok", "Desktop environment custom values"),
+        Diagnostic("untrusted arbitrary name", "warning", "Raw unknown details"),
+    ]
+    assert redact_diagnostics(private) == [
+        Diagnostic("configuration", "error", "FocusVM settings"),
+        Diagnostic("libvirt", "error", "System libvirt connection"),
+        Diagnostic("storage_pool", "ok", "Directory storage pool readiness"),
+        Diagnostic("desktop", "ok", "Local graphical session"),
+        Diagnostic("check", "warning", "Host prerequisite"),
+    ]
