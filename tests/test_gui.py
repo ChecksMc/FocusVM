@@ -136,6 +136,7 @@ def test_manager_loads_managed_vm_and_only_implemented_pages(
         "Virtual Machines",
         "Settings",
         "Focus Sessions",
+        "Resources",
     ]
     _go_to(window, "Virtual Machines")
     vm_list = _widget(window, QListWidget, "vmList")

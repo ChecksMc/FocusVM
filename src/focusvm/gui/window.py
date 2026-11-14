@@ -45,11 +45,13 @@ from ..viewer import console_command
 from ..virtualization import VMStatus
 from ..vm import GIB, VMRecord, VMService
 from .dialogs import CreateVMDialog, ResourceDialog, positive_input, positive_value
+from .resources_page import ResourcesPage
 from .setup_wizard import SetupWizard
 from .tasks import TaskRunner
 
 _SETTINGS_PAGE = 2
 _SESSIONS_PAGE = 3
+_RESOURCES_PAGE = 4
 
 
 def _button(name: str, text: str) -> QPushButton:
@@ -90,7 +92,7 @@ class MainWindow(QMainWindow):
         self.navigation.setObjectName("navigation")
         self.navigation.setAccessibleName("Pages")
         self.navigation.addItems(
-            ["Dashboard", "Virtual Machines", "Settings", "Focus Sessions"]
+            ["Dashboard", "Virtual Machines", "Settings", "Focus Sessions", "Resources"]
         )
         self.navigation.setFixedWidth(160)
         self.pages = QStackedWidget()
@@ -98,7 +100,10 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._virtual_machines())
         self.pages.addWidget(self._settings_page())
         self.pages.addWidget(self._session_page())
+        self.resources_page = ResourcesPage(paths.data_dir)
+        self.pages.addWidget(self.resources_page)
         self.navigation.currentRowChanged.connect(self.pages.setCurrentIndex)
+        self.navigation.currentRowChanged.connect(self._refresh_resources_page)
         self.pages.currentChanged.connect(self._page_changed)
         self.navigation.setCurrentRow(0)
 
@@ -794,10 +799,14 @@ class MainWindow(QMainWindow):
         self._submit("Opening the VM console…", prepare, open_viewer)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self.tasks.busy or self.wizard is not None:
+        if self.tasks.busy or self.resources_page.tasks.busy or self.wizard is not None:
             self.task_status.setText(
                 "Wait for the current operation or finish setup before closing."
             )
             event.ignore()
             return
         super().closeEvent(event)
+
+    def _refresh_resources_page(self, row: int) -> None:
+        if row == _RESOURCES_PAGE:
+            self.resources_page.refresh()

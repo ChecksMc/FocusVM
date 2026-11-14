@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, Qt, QThread, Slot
 from ..config import ConfigError
 from ..local_state import PrivateFileError
 from ..provisioning import ProvisioningError, ProvisioningUnavailable
+from ..resources import ResourceError, ResourceUnavailable
 from ..sessions import SessionError, SessionInputError
 from ..viewer import ViewerError
 from ..virtualization import VirtualizationError
@@ -20,6 +21,8 @@ _EXPECTED_ERRORS = (
     PrivateFileError,
     ProvisioningError,
     ProvisioningUnavailable,
+    ResourceError,
+    ResourceUnavailable,
     SessionError,
     SessionInputError,
     ViewerError,
