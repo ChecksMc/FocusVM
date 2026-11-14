@@ -1,0 +1,12 @@
+Third-party components
+
+FocusVM installs system tools and optional Python packages separately. The host
+application distributions contain FocusVM source code and no third-party
+executables or bundled dependencies. Qt for Python, libvirt, QEMU, virt-viewer,
+Cage, and other optional tools retain their respective licenses and notices.
+
+Fedora guest images are separate artifacts. Their installed packages retain
+their respective licenses and notices, including the files under
+/usr/share/licenses in the image. The guest builder records installed package
+versions in packages.txt. A redistributed guest image also needs a review of
+the applicable source and notice obligations and Fedora trademark terms.
