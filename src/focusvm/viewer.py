@@ -6,7 +6,7 @@ import select
 import shutil
 import signal
 import subprocess
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from threading import Thread
@@ -68,26 +68,37 @@ def check_focus_viewer(vm: UUID) -> tuple[str, list[str]]:
 
 def launch_focus_viewer(command: tuple[str, list[str]], token: UUID, log: Path) -> None:
     """Start a detachable viewer whose process can be recovered by token."""
+    launch_detached(command, token, log, "fullscreen viewer")
+
+
+def launch_detached(
+    command: tuple[str, list[str]],
+    token: UUID,
+    log: Path,
+    label: str,
+    environment: Mapping[str, str] | None = None,
+) -> None:
     executable, arguments = command
+    env = os.environ if environment is None else environment
     try:
         with open(log, "ab", opener=open_owned_file) as output:
             if os.fstat(output.fileno()).st_nlink != 1:
                 raise ViewerError(f"Viewer log cannot be a hard link: {log}")
             os.fchmod(output.fileno(), 0o600)
             output.truncate(0)
-            output.write(b"Launching the FocusVM fullscreen viewer.\n")
+            output.write(f"Launching the FocusVM {label}.\n".encode())
             output.flush()
-            process = subprocess.Popen(  # noqa: S603 - Started from console_command.
+            process = subprocess.Popen(  # noqa: S603 - Verified local viewer or compositor.
                 [executable, *arguments],
                 stdin=subprocess.DEVNULL,
                 stdout=output,
                 stderr=subprocess.STDOUT,
-                env={**os.environ, _SESSION_MARKER_KEY: str(token)},
+                env={**env, _SESSION_MARKER_KEY: str(token)},
                 start_new_session=True,
             )
     except (OSError, PrivateFileError) as error:
         raise ViewerError(
-            f"Could not launch the fullscreen viewer. Log: {log}. {error}"
+            f"Could not launch the {label}. Log: {log}. {error}"
         ) from error
 
     try:
@@ -99,19 +110,35 @@ def launch_focus_viewer(command: tuple[str, list[str]], token: UUID, log: Path) 
             Thread(
                 target=process.wait, name="focusvm-viewer-reaper", daemon=True
             ).start()
-    raise ViewerError(
-        f"The fullscreen viewer exited with status {returncode}. Log: {log}"
-    )
+    raise ViewerError(f"The {label} exited with status {returncode}. Log: {log}")
 
 
 def focus_viewer_running(token: UUID) -> bool:
-    with _focus_viewer(token) as descriptor:
-        return descriptor is not None and not _exited(descriptor)
+    return process_running(token, _VIEWER, matches_viewer_argv, "fullscreen viewer")
 
 
 def close_focus_viewer(token: UUID) -> None:
     """Close only the session's identified viewer and wait briefly for exit."""
-    with _focus_viewer(token) as descriptor:
+    close_process(token, _VIEWER, matches_viewer_argv, "fullscreen viewer")
+
+
+def process_running(
+    token: UUID,
+    executable: str,
+    matches_argv: Callable[[Sequence[bytes]], bool],
+    label: str,
+) -> bool:
+    with _session_process(token, executable, matches_argv, label) as descriptor:
+        return descriptor is not None and not _exited(descriptor)
+
+
+def close_process(
+    token: UUID,
+    executable: str,
+    matches_argv: Callable[[Sequence[bytes]], bool],
+    label: str,
+) -> None:
+    with _session_process(token, executable, matches_argv, label) as descriptor:
         if descriptor is None:
             return
         try:
@@ -120,15 +147,20 @@ def close_focus_viewer(token: UUID) -> None:
             return
         except (AttributeError, OSError) as error:
             raise ViewerError(
-                "Could not close the fullscreen viewer. Close its window manually."
+                f"Could not close the {label}. Close its window manually."
             ) from error
         if not _exited(descriptor, _CLOSE_MILLISECONDS):
-            raise ViewerError(
-                "The fullscreen viewer did not exit. Close its window manually."
-            )
+            raise ViewerError(f"The {label} did not exit. Close its window manually.")
 
 
 def _local_display() -> bool:
+    if wayland_display() is not None:
+        return True
+    display = os.environ.get("DISPLAY", "")
+    return re.fullmatch(r"(?:unix)?:[0-9]+(?:\.[0-9]+)?", display) is not None
+
+
+def wayland_display() -> Path | None:
     name = os.environ.get("WAYLAND_DISPLAY")
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if name:
@@ -137,33 +169,39 @@ def _local_display() -> bool:
             socket = socket if socket.is_absolute() else Path(runtime or "") / socket
             with suppress(OSError):
                 if socket.is_socket():
-                    return True
-    display = os.environ.get("DISPLAY", "")
-    return re.fullmatch(r"(?:unix)?:[0-9]+(?:\.[0-9]+)?", display) is not None
+                    return socket
+    return None
 
 
 @contextmanager
-def _focus_viewer(token: UUID) -> Generator[int | None]:
+def _session_process(
+    token: UUID,
+    executable: str,
+    matches_argv: Callable[[Sequence[bytes]], bool],
+    label: str,
+) -> Generator[int | None]:
     marker = os.fsencode(f"{_SESSION_MARKER_KEY}={token}")
     descriptor: int | None = None
     try:
         try:
             for directory in _PROC.iterdir():
                 if directory.name.isascii() and directory.name.isdecimal():
-                    candidate = _pin_viewer(directory, marker)
+                    candidate = _pin_process(
+                        directory, marker, executable, matches_argv
+                    )
                     if candidate is None:
                         continue
                     if descriptor is not None and not _exited(descriptor):
                         os.close(candidate)
                         raise ViewerError(
-                            "Multiple fullscreen viewers match the session. Close their windows manually."
+                            f"Multiple processes match the session's {label}. Close their windows manually."
                         )
                     if descriptor is not None:
                         os.close(descriptor)
                     descriptor = candidate
         except (AttributeError, OSError) as error:
             raise ViewerError(
-                "Could not verify the fullscreen viewer process. Close its window manually."
+                f"Could not verify the {label} process. Close its window manually."
             ) from error
         yield descriptor
     finally:
@@ -171,11 +209,16 @@ def _focus_viewer(token: UUID) -> Generator[int | None]:
             os.close(descriptor)
 
 
-def _pin_viewer(directory: Path, marker: bytes) -> int | None:
+def _pin_process(
+    directory: Path,
+    marker: bytes,
+    executable: str,
+    matches_argv: Callable[[Sequence[bytes]], bool],
+) -> int | None:
     try:
         if directory.stat().st_uid != os.getuid():
             return None
-        if not _matches_argv((directory / "cmdline").read_bytes().split(b"\0")):
+        if not matches_argv((directory / "cmdline").read_bytes().split(b"\0")):
             return None
         descriptor = os.pidfd_open(int(directory.name))
     except (FileNotFoundError, ProcessLookupError):
@@ -186,12 +229,12 @@ def _pin_viewer(directory: Path, marker: bytes) -> int | None:
     try:
         if _exited(descriptor) or directory.stat().st_uid != os.getuid():
             return None
-        if not _matches_argv((directory / "cmdline").read_bytes().split(b"\0")):
+        if not matches_argv((directory / "cmdline").read_bytes().split(b"\0")):
             return None
         if marker not in (directory / "environ").read_bytes().split(b"\0"):
             return None
-        executable = (directory / "exe").readlink().name.removesuffix(" (deleted)")
-        keep = executable == _VIEWER and not _exited(descriptor)
+        actual = (directory / "exe").readlink().name.removesuffix(" (deleted)")
+        keep = actual == executable and not _exited(descriptor)
         return descriptor if keep else None
     except (FileNotFoundError, ProcessLookupError):
         return None
@@ -200,7 +243,7 @@ def _pin_viewer(directory: Path, marker: bytes) -> int | None:
             os.close(descriptor)
 
 
-def _matches_argv(arguments: Sequence[bytes]) -> bool:
+def matches_viewer_argv(arguments: Sequence[bytes]) -> bool:
     if (
         len(arguments) != len(_FOCUS_ARGV) + 3
         or Path(os.fsdecode(arguments[0])).name != _VIEWER
