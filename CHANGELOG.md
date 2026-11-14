@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Install FocusVM for the current user with `./install.sh`. The default installation adds a desktop menu entry. Pass `--cli-only` for a terminal installation.
+- Prepare a Fedora host with `./setup-fedora.sh`. Run `focusvm setup` or use the first-run wizard to detect a usable storage pool and save settings.
+- Remove the user-installed application with `focusvm uninstall` while keeping VMs, resources, and settings.
+
 ## 0.1.0rc1
 
 First release candidate of FocusVM, an offline Linux development environment for independent programming.

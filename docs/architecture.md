@@ -9,6 +9,7 @@ Add modules when their first feature lands. The initial Python package uses a `s
 ```text
 src/focusvm/
   config.py          Settings, profile validation, and TOML migrations
+  setup.py           Storage pool discovery and initial host checks
   cli.py             Command parsing, text and JSON output, and exit codes
   local_state.py     Private files, locking, and atomic writes
   diagnostics.py     Host and dependency checks
@@ -86,6 +87,7 @@ The resource service copies selected files into a private library and builds a r
 | Command | Status | Operation |
 | --- | --- | --- |
 | `focusvm init --storage-pool NAME` | Available | Write initial settings or report that identical settings already exist |
+| `focusvm setup [--storage-pool NAME]` | Available | Find or select a pool, check the host, and save initial settings |
 | `focusvm config validate` | Available | Check the current configuration |
 | `focusvm doctor [--json]` | Available | Check host dependencies, KVM, libvirt access, storage, and desktop capabilities |
 | `focusvm gui` | Available with the `gui` extra | Open the manager and launch setup when settings are absent |

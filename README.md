@@ -10,33 +10,29 @@ Use an x86-64 Linux host with Python 3.12 or newer, hardware virtualization, an 
 
 The VM and viewer recovery flow passed on Fedora 44 KDE Plasma on Wayland and on Fedora 44 GNOME Shell using a virtual Wayland monitor. A full Fedora Workstation login and physical shortcut checks are pending. Other Linux hosts with the same dependencies are compatibility candidates. [Verification record](docs/verification.md#phase-8-development-checks)
 
-## Install and check the host
+## Install and set up
 
-After installing the host prerequisites and preparing the storage pool, run these commands from the repository root. Use the system interpreter so FocusVM can load the distribution's libvirt binding.
+On a standard Fedora installation, run these commands from the repository root. The first command asks for administrator access to install the host tools, enable local libvirt services, and prepare a dedicated `focusvm` storage pool. Skip it if your host already has the tools and an active directory-backed pool.
 
 ```sh
-python3 -m venv --system-site-packages .venv-vm
-. .venv-vm/bin/activate
-python -m pip install .
-focusvm init --storage-pool focusvm
-focusvm config validate
-focusvm doctor
+./setup-fedora.sh
+./install.sh
+focusvm setup
 ```
 
-`init` records the storage pool name. Replace `focusvm` with the name of your active pool. The `doctor` command checks the host and reports missing prerequisites. To create a VM, supply a QCOW2 image, its signed manifest, and a trusted publisher keyring through the manager or `focusvm create`. [VM creation commands](docs/setup.md#phase-2-cli-workflow) · [Build and sign a guest image](docs/guest.md)
+`install.sh` runs as your regular user. Open **FocusVM** from the application menu or run `focusvm gui`. Use `./install.sh --cli-only` for a terminal-only installation. If your shell cannot find the command, run `~/.local/bin/focusvm setup`.
+
+`focusvm setup` checks the host and selects an active pool. Use `focusvm setup --storage-pool NAME` if you need to choose one. To create a VM, supply a QCOW2 image, its signed manifest, and a trusted publisher keyring. [Manual setup and troubleshooting](docs/setup.md) · [Build and sign a guest image](docs/guest.md)
 
 ## Desktop manager
 
-Install the optional Qt dependencies and launch the manager from your Linux desktop session.
-
-```sh
-python -m pip install '.[gui]'
-focusvm gui
-```
-
-On first launch without settings, the wizard checks the selected storage pool and host dependencies before saving. Use **Virtual Machines** to create, start, inspect, or shut down a guest. [Desktop setup and usage](docs/setup.md#desktop-manager)
+On first launch without settings, choose **Check host** and then **Save settings**. The wizard can detect a pool when the name is blank. Use **Virtual Machines** to create, start, inspect, or shut down a guest. [Desktop setup and usage](docs/setup.md#desktop-manager)
 
 ![FocusVM Resources page with three sample local references](docs/images/resources.png)
+
+## Uninstall
+
+End any focus session and close the manager before running `focusvm uninstall` or `./uninstall.sh`. This removes the installed app and launchers. VMs, settings, and your resource library remain available when you reinstall. [Installation details](docs/setup.md#quick-install)
 
 ## Start a focus session
 
