@@ -1,3 +1,5 @@
 include CHANGELOG.md CONTRIBUTING.md SECURITY.md
+include install.sh uninstall.sh setup-fedora.sh
 recursive-include docs *.md *.png
 recursive-include guest *.py *.ks *.sh
+recursive-include scripts *.py

@@ -36,6 +36,9 @@ jobs:
           ruff format --check .
           ruff check .
           bash -n guest/verify.sh
+          for script in install.sh uninstall.sh setup-fedora.sh; do
+            sh -n "$script"
+          done
       - name: Check types
         run: |
           python -m pyright --pythonpath "$(command -v python)"
@@ -59,7 +62,9 @@ jobs:
                        for member in archive if member.isfile()}
           required = {'LICENSE', 'NOTICE', 'CHANGELOG.md', 'CONTRIBUTING.md',
                       'README.md', 'SECURITY.md', 'docs/setup.md', 'guest/build.py',
-                      'guest/fedora-44.ks', 'guest/verify.sh'}
+                      'guest/fedora-44.ks', 'guest/verify.sh', 'install.sh',
+                      'uninstall.sh', 'setup-fedora.sh', 'scripts/install.py',
+                      'scripts/setup_fedora.py'}
           missing = required - files
           if missing:
               raise SystemExit(f'Source distribution is missing {sorted(missing)}')
