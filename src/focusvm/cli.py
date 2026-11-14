@@ -17,6 +17,17 @@ from .diagnostics import diagnose
 from .gui import GUIUnavailable, launch
 from .local_state import PrivateFileError
 from .provisioning import ImageInput, ProvisioningError, ProvisioningUnavailable
+from .sessions import (
+    DEFAULT_NETWORK,
+    OFFLINE_NETWORKS,
+    PROFILE_ID,
+    PROFILE_NAME,
+    FocusSession,
+    SessionError,
+    SessionInputError,
+    SessionService,
+)
+from .viewer import ViewerError
 from .virtualization import VirtualizationError, VirtualizationUnavailable, VMStatus
 from .vm import VMInputError, VMService, VMStateError
 
@@ -38,7 +49,10 @@ class _Arguments(argparse.Namespace):
         "status",
         "configure",
         "gui",
+        "session",
+        "profiles",
     ]
+    session_command: Literal["start", "status", "reopen", "end"]
     storage_pool: str
     json: bool
     name: str
@@ -51,6 +65,8 @@ class _Arguments(argparse.Namespace):
     memory_mib: int | None
     disk_gib: int | None
     timeout: int
+    profile: str
+    network: str
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -121,6 +137,33 @@ def _parser() -> argparse.ArgumentParser:
     _vm_options(configure)
     _resource_options(configure, required=True)
     commands.add_parser("gui", help="Open the FocusVM desktop manager")
+
+    session = commands.add_parser("session", help="Manage the current focus session")
+    sessions = session.add_subparsers(dest="session_command", required=True)
+    session_start = sessions.add_parser(
+        "start", help="Start a fullscreen focus session"
+    )
+    _vm_options(session_start)
+    session_start.add_argument(
+        "--profile", choices=(PROFILE_ID,), default=PROFILE_ID, help="Focus profile"
+    )
+    session_start.add_argument(
+        "--network",
+        choices=(*OFFLINE_NETWORKS, "flexible"),
+        default=DEFAULT_NETWORK,
+        help="Guest network policy (Flexible is unavailable)",
+    )
+    _json_option(sessions.add_parser("status", help="Read the current focus session"))
+    _json_option(sessions.add_parser("reopen", help="Reopen the fullscreen viewer"))
+    _json_option(
+        sessions.add_parser("end", help="End the session and leave the VM running")
+    )
+
+    profiles = commands.add_parser("profiles", help="Inspect available focus profiles")
+    profile_commands = profiles.add_subparsers(required=True)
+    _json_option(
+        profile_commands.add_parser("list", help="List available focus profiles")
+    )
     return parser
 
 
@@ -152,7 +195,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         return _dispatch(args, ConfigPaths.from_environment())
-    except (ConfigError, VMInputError, ProvisioningError) as error:
+    except (ConfigError, VMInputError, ProvisioningError, SessionInputError) as error:
         print(f"focusvm: {error}", file=sys.stderr)
         return EXIT_INVALID_INPUT
     except (
@@ -162,7 +205,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ) as error:
         print(f"focusvm: {error}", file=sys.stderr)
         return EXIT_UNAVAILABLE
-    except (OSError, PrivateFileError, VirtualizationError, VMStateError) as error:
+    except (
+        OSError,
+        PrivateFileError,
+        VirtualizationError,
+        VMStateError,
+        SessionError,
+        ViewerError,
+    ) as error:
         print(f"focusvm: {error}", file=sys.stderr)
         return EXIT_OPERATION_FAILED
     except KeyboardInterrupt:
@@ -173,6 +223,24 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
     if args.command == "gui":
         return launch(paths)
+    if args.command == "profiles":
+        if args.json:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "id": PROFILE_ID,
+                            "name": PROFILE_NAME,
+                            "network": DEFAULT_NETWORK,
+                        }
+                    ]
+                )
+            )
+        else:
+            print(
+                f"{PROFILE_NAME} ({PROFILE_ID}) uses {DEFAULT_NETWORK} networking by default."
+            )
+        return 0
     store = ConfigStore(paths.config_file)
     if args.command == "init":
         if store.initialize(Settings.for_pool(args.storage_pool)):
@@ -203,6 +271,8 @@ def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
         )
 
     service = VMService(paths.state_dir, paths.cache_dir)
+    if args.command == "session":
+        return _dispatch_session(args, store, SessionService(paths.state_dir, service))
     if args.command == "list":
         records = service.list_records()
         if args.json:
@@ -243,9 +313,7 @@ def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
             resources,
         )
     else:
-        target = args.vm
-        if target is None and (settings := _load_config(store)) is not None:
-            target = settings.application.default_vm
+        target = _target_vm(args.vm, store)
         if args.command == "start":
             status = service.start(target)
         elif args.command == "stop":
@@ -259,6 +327,71 @@ def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
 
     _print_status(status, json_output=args.json)
     return 0
+
+
+def _dispatch_session(
+    args: _Arguments, store: ConfigStore, service: SessionService
+) -> int:
+    session: FocusSession | None
+    if args.session_command == "start":
+        target = _target_vm(args.vm, store)
+        if not args.json:
+            _print_viewer_controls()
+        session = service.start(target, args.profile, args.network)
+    elif args.session_command == "reopen":
+        if not args.json:
+            _print_viewer_controls()
+        session = service.reopen()
+    elif args.session_command == "end":
+        service.end()
+        if args.json:
+            print(json.dumps({"state": "ended"}))
+        else:
+            print("Focus session ended. Use focusvm stop to shut down the VM.")
+        return 0
+    else:
+        session = service.status()
+    _print_session(session, json_output=args.json)
+    return 0
+
+
+def _target_vm(target: UUID | None, store: ConfigStore) -> UUID | None:
+    if target is None and (settings := _load_config(store)) is not None:
+        return settings.application.default_vm
+    return target
+
+
+def _print_viewer_controls() -> None:
+    print(
+        "Press Shift+F12 to release input or Shift+F11 to toggle fullscreen. "
+        "Run focusvm session end from a host terminal to end the session.",
+        flush=True,
+    )
+
+
+def _print_session(session: FocusSession | None, *, json_output: bool) -> None:
+    if session is None:
+        print("null" if json_output else "No focus session.")
+        return
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "vm": str(session.vm),
+                    "vm_name": session.vm_name,
+                    "profile": session.profile,
+                    "network": session.network,
+                    "state": session.state,
+                    "started_at": session.started_at,
+                    "detail": session.detail,
+                }
+            )
+        )
+        return
+    print(f"Focus session for {session.vm_name} ({session.vm}) is {session.state}.")
+    print(f"Profile {session.profile} uses {session.network} networking.")
+    if session.detail:
+        print(session.detail)
 
 
 def _load_config(store: ConfigStore) -> Settings | None:

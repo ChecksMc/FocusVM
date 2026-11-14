@@ -59,3 +59,5 @@ jobs:
           "$smoke_dir/venv/bin/focusvm" init --storage-pool focusvm
           "$smoke_dir/venv/bin/focusvm" config validate
           "$smoke_dir/venv/bin/focusvm" list --json
+          "$smoke_dir/venv/bin/focusvm" profiles list --json
+          "$smoke_dir/venv/bin/focusvm" session status --json

@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -10,10 +11,12 @@ import pytest
 
 from focusvm import __version__
 from focusvm.cli import main
-from focusvm.config import VMDefaults
+from focusvm.config import ConfigPaths, ConfigStore, Settings, VMDefaults
 from focusvm.diagnostics import Diagnostic
 from focusvm.provisioning import ImageInput
-from focusvm.virtualization import VMStatus
+from focusvm.sessions import DEFAULT_NETWORK, PROFILE_ID, FocusSession, SessionError
+from focusvm.viewer import ViewerError
+from focusvm.virtualization import VirtualizationUnavailable, VMStatus
 
 
 def run_focusvm(config_home: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -153,3 +156,129 @@ def test_create_uses_config_defaults_and_prompts_for_password(
     captured = capsys.readouterr()
     assert "guest secret" not in captured.out + captured.err
     assert json.loads(captured.out)["uuid"] == str(status.uuid)
+
+
+@pytest.fixture
+def session_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ConfigPaths:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    return ConfigPaths.from_environment()
+
+
+def test_start_session_uses_configured_vm_and_prints_public_json(
+    session_paths: ConfigPaths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vm = uuid4()
+    settings = Settings.for_pool("work")
+    ConfigStore(session_paths.config_file).initialize(
+        replace(settings, application=replace(settings.application, default_vm=vm))
+    )
+    started_at = "2026-11-14T20:00:00+00:00"
+    session = FocusSession(
+        vm=vm,
+        vm_name="work",
+        profile=PROFILE_ID,
+        network=DEFAULT_NETWORK,
+        state="active",
+        started_at=started_at,
+        detail=None,
+    )
+    with patch("focusvm.cli.SessionService.start", return_value=session) as start:
+        assert main(["session", "start", "--json"]) == 0
+    start.assert_called_once_with(vm, PROFILE_ID, DEFAULT_NETWORK)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out) == {
+        "vm": str(vm),
+        "vm_name": "work",
+        "profile": "deep-work",
+        "network": "balanced",
+        "state": "active",
+        "started_at": started_at,
+        "detail": None,
+    }
+
+
+def test_start_session_uses_explicit_vm_and_prints_controls(
+    session_paths: ConfigPaths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vm = uuid4()
+    settings = Settings.for_pool("work")
+    ConfigStore(session_paths.config_file).initialize(
+        replace(settings, application=replace(settings.application, default_vm=uuid4()))
+    )
+    session = FocusSession(
+        vm=vm,
+        vm_name="work",
+        profile=PROFILE_ID,
+        network="strict",
+        state="active",
+        started_at="2026-11-14T20:00:00+00:00",
+        detail=None,
+    )
+    with patch("focusvm.cli.SessionService.start", return_value=session) as start:
+        assert main(["session", "start", "--vm", str(vm), "--network", "strict"]) == 0
+    start.assert_called_once_with(vm, PROFILE_ID, "strict")
+    out = capsys.readouterr().out
+    assert "Shift+F11" in out and "Shift+F12" in out
+    assert "focusvm session end" in out
+    assert "is active" in out
+
+
+def test_session_inspection_and_end_do_not_require_valid_config(
+    session_paths: ConfigPaths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    session_paths.config_dir.mkdir(parents=True)
+    session_paths.config_file.write_text("invalid settings", encoding="utf-8")
+    with patch("focusvm.cli.SessionService.status", return_value=None) as status:
+        assert main(["session", "status", "--json"]) == 0
+    status.assert_called_once_with()
+    assert json.loads(capsys.readouterr().out) is None
+
+    with patch("focusvm.cli.SessionService.end") as end:
+        assert main(["session", "end", "--json"]) == 0
+    end.assert_called_once_with()
+    assert json.loads(capsys.readouterr().out) == {"state": "ended"}
+
+
+def test_session_unavailable_and_reopen_failure_keep_stdout_clean(
+    session_paths: ConfigPaths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with patch(
+        "focusvm.cli.SessionService.start",
+        side_effect=VirtualizationUnavailable("Flexible networking is unavailable"),
+    ) as start:
+        assert main(["session", "start", "--network", "flexible", "--json"]) == 3
+    start.assert_called_once_with(None, PROFILE_ID, "flexible")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Flexible networking is unavailable" in captured.err
+
+    with patch(
+        "focusvm.cli.SessionService.reopen",
+        side_effect=SessionError("The focus session could not be verified"),
+    ) as reopen:
+        assert main(["session", "reopen", "--json"]) == 4
+    reopen.assert_called_once_with()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "could not be verified" in captured.err
+
+    with patch(
+        "focusvm.cli.SessionService.reopen", side_effect=ViewerError("Viewer exited")
+    ):
+        assert main(["session", "reopen", "--json"]) == 4
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Viewer exited" in captured.err
+
+
+def test_profiles_lists_only_implemented_profiles(
+    session_paths: ConfigPaths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["profiles", "list", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == [
+        {"id": "deep-work", "name": "Deep Work", "network": "balanced"}
+    ]
+    assert not session_paths.config_file.exists()

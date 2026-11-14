@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from PySide6.QtCore import QProcess, Qt, QTimer
@@ -33,12 +34,22 @@ from ..config import (
     VMDefaults,
 )
 from ..diagnostics import Diagnostic, diagnose
+from ..sessions import (
+    OFFLINE_NETWORKS,
+    PROFILE_ID,
+    PROFILE_NAME,
+    FocusSession,
+    SessionService,
+)
 from ..viewer import console_command
 from ..virtualization import VMStatus
 from ..vm import GIB, VMRecord, VMService
 from .dialogs import CreateVMDialog, ResourceDialog, positive_input, positive_value
 from .setup_wizard import SetupWizard
 from .tasks import TaskRunner
+
+_SETTINGS_PAGE = 2
+_SESSIONS_PAGE = 3
 
 
 def _button(name: str, text: str) -> QPushButton:
@@ -61,10 +72,13 @@ class MainWindow(QMainWindow):
         self.paths = paths
         self.store = ConfigStore(paths.config_file)
         self.service = VMService(paths.state_dir, paths.cache_dir)
+        self.session_service = SessionService(paths.state_dir, self.service)
         self.tasks = TaskRunner(self)
         self.settings: Settings | None = None
         self.records: tuple[VMRecord, ...] = ()
         self.status: VMStatus | None = None
+        self.session: FocusSession | None = None
+        self.session_checked = False
         self.polling = False
         self.wizard: SetupWizard | None = None
         self.show_wizard = show_wizard
@@ -75,13 +89,17 @@ class MainWindow(QMainWindow):
         self.navigation = QListWidget()
         self.navigation.setObjectName("navigation")
         self.navigation.setAccessibleName("Pages")
-        self.navigation.addItems(["Dashboard", "Virtual Machines", "Settings"])
+        self.navigation.addItems(
+            ["Dashboard", "Virtual Machines", "Settings", "Focus Sessions"]
+        )
         self.navigation.setFixedWidth(160)
         self.pages = QStackedWidget()
         self.pages.addWidget(self._dashboard())
         self.pages.addWidget(self._virtual_machines())
         self.pages.addWidget(self._settings_page())
+        self.pages.addWidget(self._session_page())
         self.navigation.currentRowChanged.connect(self.pages.setCurrentIndex)
+        self.pages.currentChanged.connect(self._page_changed)
         self.navigation.setCurrentRow(0)
 
         body = QHBoxLayout()
@@ -216,6 +234,71 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         return page
 
+    def _session_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        form = QFormLayout()
+        self.session_vm = _label(
+            "sessionVM", "Select a VM on the Virtual Machines page."
+        )
+        vm_row = QHBoxLayout()
+        vm_row.addWidget(self.session_vm, 1)
+        self.session_choose_vm = _button("sessionChooseVMButton", "Choose VM…")
+        self.session_choose_vm.clicked.connect(lambda: self.navigation.setCurrentRow(1))
+        vm_row.addWidget(self.session_choose_vm)
+        self.session_network = QComboBox()
+        self.session_network.setObjectName("sessionNetwork")
+        self.session_network.addItems([mode.capitalize() for mode in OFFLINE_NETWORKS])
+        form.addRow("Profile", _label("sessionProfile", PROFILE_NAME))
+        form.addRow("Virtual machine", vm_row)
+        form.addRow("&Network", self.session_network)
+        layout.addLayout(form)
+        layout.addWidget(
+            _label(
+                "sessionNetworkHelp", "Balanced and Strict both run the guest offline."
+            )
+        )
+        self.session_status = _label("sessionStatus", "Reading focus session status…")
+        self.session_status.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(self.session_status)
+        actions = QHBoxLayout()
+        self.session_start = _button("sessionStartButton", "Start Focus Session")
+        self.session_reopen = _button("sessionReopenButton", "Reopen Viewer")
+        self.session_end = _button("sessionEndButton", "End Focus Session")
+        self.session_refresh = _button("sessionRefreshButton", "Refresh")
+        for button, action in (
+            (self.session_start, self._start_session),
+            (self.session_reopen, self._reopen_session),
+            (self.session_end, self._end_session),
+            (self.session_refresh, self._poll_session),
+        ):
+            button.clicked.connect(action)
+            actions.addWidget(button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        layout.addWidget(
+            _label(
+                "sessionExitHelp",
+                "In the viewer, press Shift+F12 to release input and Shift+F11 to leave "
+                "fullscreen. End the focus session here or run focusvm session end. "
+                "Ending the session keeps the guest running.",
+            )
+        )
+        layout.addStretch()
+        return page
+
+    def _page_changed(self, index: int) -> None:
+        if index == _SESSIONS_PAGE:
+            self.session_checked = False
+            self._poll_session_if_needed()
+            self._sync_actions()
+
+    def _poll_session_if_needed(self) -> None:
+        if not self.session_checked and self.pages.currentIndex() == _SESSIONS_PAGE:
+            self._poll_session()
+
     def _submit[T](
         self,
         label: str,
@@ -228,8 +311,13 @@ class MainWindow(QMainWindow):
             self.task_status.setText("")
             self._sync_actions()
             success(result)
+            self._poll_session_if_needed()
 
-        if self.tasks.submit(label, operation, finish, failure or self._error):
+        def failed(message: str) -> None:
+            (failure or self._error)(message)
+            self._poll_session_if_needed()
+
+        if self.tasks.submit(label, operation, finish, failed):
             self.task_status.setText(label)
             self._sync_actions()
 
@@ -270,6 +358,27 @@ class MainWindow(QMainWindow):
         self.dashboard_start.setEnabled(self.start_button.isEnabled())
         self.dashboard_stop.setEnabled(self.stop_button.isEnabled())
         self.dashboard_open.setEnabled(self.open_button.isEnabled())
+        selected = self._selection()
+        if selected is not None and selected.phase != "ready":
+            selected = None
+        can_start = (
+            self.session_checked and self.session is None and selected is not None
+        )
+        if self.session is not None:
+            session_vm = self.session.vm_name
+        elif selected is not None:
+            session_vm = selected.name
+        else:
+            session_vm = "Select a VM on the Virtual Machines page."
+        self.session_vm.setText(session_vm)
+        self.session_choose_vm.setEnabled(ready and self.session is None)
+        self.session_start.setEnabled(ready and can_start)
+        self.session_network.setEnabled(ready and can_start)
+        self.session_reopen.setEnabled(
+            ready and self.session is not None and self.session.state == "disconnected"
+        )
+        self.session_end.setEnabled(ready and self.session is not None)
+        self.session_refresh.setEnabled(ready)
 
     def _load_settings(self) -> None:
         def load() -> Settings | None:
@@ -483,11 +592,14 @@ class MainWindow(QMainWindow):
         self._sync_actions()
 
     def _poll_selected(self) -> None:
+        if self.pages.currentIndex() == _SESSIONS_PAGE:
+            self._poll_session()
+            return
         selected = self._selection()
         if (
             self.tasks.busy
             or self.wizard is not None
-            or self.pages.currentIndex() == 2
+            or self.pages.currentIndex() == _SETTINGS_PAGE
             or QApplication.activeModalWidget() is not None
             or selected is None
             or selected.phase != "ready"
@@ -497,10 +609,12 @@ class MainWindow(QMainWindow):
         def polled(status: VMStatus) -> None:
             self.polling = False
             self._show_status(status)
+            self._poll_session_if_needed()
 
         def failed(message: str) -> None:
             self.polling = False
             self._status_error(message)
+            self._poll_session_if_needed()
 
         self.polling = self.tasks.submit(
             "Reading VM status…",
@@ -509,6 +623,84 @@ class MainWindow(QMainWindow):
             failed,
         )
         self._sync_actions()
+
+    def _poll_session(self) -> None:
+        if (
+            self.tasks.busy
+            or self.wizard is not None
+            or QApplication.activeModalWidget() is not None
+        ):
+            return
+        self.tasks.submit(
+            "Reading focus session status…",
+            self.session_service.status,
+            self._show_session,
+            self._session_status_error,
+        )
+        self._sync_actions()
+
+    def _show_session(self, session: FocusSession | None) -> None:
+        self.session = session
+        self.session_checked = True
+        if session is None:
+            self.session_status.setText("No focus session is running.")
+        else:
+            started = datetime.fromisoformat(session.started_at)
+            elapsed_seconds = max(0, int((datetime.now(UTC) - started).total_seconds()))
+            elapsed = timedelta(seconds=elapsed_seconds)
+            network = session.network.capitalize()
+            if session.state != "unresolved":
+                network = f"{network} (offline)"
+            status = (
+                f"{session.vm_name} · {session.state.capitalize()}\n"
+                f"{PROFILE_NAME} · {network} · {elapsed} elapsed"
+            )
+            if session.detail:
+                status = f"{status}\n{session.detail}"
+            self.session_status.setText(status)
+        self._sync_actions()
+
+    def _session_status_error(self, message: str) -> None:
+        self.session = None
+        self.session_checked = False
+        self.session_status.setText(f"Focus session status is unavailable. {message}")
+        self._sync_actions()
+
+    def _session_action_error(self, message: str) -> None:
+        self._error(message)
+        self._poll_session()
+
+    def _start_session(self) -> None:
+        selected = self._selection()
+        if selected is None or not self.session_start.isEnabled():
+            return
+        network = OFFLINE_NETWORKS[self.session_network.currentIndex()]
+        self._submit(
+            "Starting focus session…",
+            lambda: self.session_service.start(selected.uuid, PROFILE_ID, network),
+            self._show_session,
+            failure=self._session_action_error,
+        )
+
+    def _reopen_session(self) -> None:
+        self._submit(
+            "Reopening focus viewer…",
+            self.session_service.reopen,
+            self._show_session,
+            failure=self._session_action_error,
+        )
+
+    def _end_session(self) -> None:
+        def ended(_result: None) -> None:
+            self._show_session(None)
+            self.task_status.setText("Focus session ended.")
+
+        self._submit(
+            "Ending focus session…",
+            self.session_service.end,
+            ended,
+            failure=self._session_action_error,
+        )
 
     def _status_error(self, message: str) -> None:
         self.status = None

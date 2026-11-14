@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
 from uuid import UUID, uuid4
@@ -20,6 +21,7 @@ from focusvm.config import ConfigPaths, ConfigStore, Settings, VMDefaults
 from focusvm.gui import window as gui_window
 from focusvm.gui.dialogs import CreateVMDialog
 from focusvm.provisioning import ImageInput
+from focusvm.sessions import PROFILE_ID, FocusSession, SessionError
 from focusvm.virtualization import VirtualizationError, VMStatus
 from focusvm.vm import GIB, VMRecord
 
@@ -133,6 +135,7 @@ def test_manager_loads_managed_vm_and_only_implemented_pages(
         "Dashboard",
         "Virtual Machines",
         "Settings",
+        "Focus Sessions",
     ]
     _go_to(window, "Virtual Machines")
     vm_list = _widget(window, QListWidget, "vmList")
@@ -255,3 +258,115 @@ def test_manager_submits_validated_creation_dialog(
     create.click()
     qtbot.waitUntil(lambda: service.created is not None and not window.tasks.busy)
     assert service.created == ("new-vm", source, VMDefaults())
+
+
+def _session() -> FocusSession:
+    started = datetime.now(UTC) - timedelta(minutes=3, seconds=30)
+    return FocusSession(
+        vm=VM_ID,
+        vm_name=VM_NAME,
+        profile=PROFILE_ID,
+        network="strict",
+        state="active",
+        started_at=started.isoformat(),
+        detail=None,
+    )
+
+
+class _SessionService:
+    def __init__(self) -> None:
+        self.current: FocusSession | None = None
+        self.started: tuple[UUID | None, str, str] | None = None
+        self.started_signal = Event()
+        self.finish_start = Event()
+
+    def status(self) -> FocusSession | None:
+        return self.current
+
+    def start(self, target: UUID | None, profile: str, network: str) -> FocusSession:
+        self.started_signal.set()
+        if not self.finish_start.wait(timeout=3):
+            raise SessionError("Test did not release pending focus session start")
+        self.started = (target, profile, network)
+        session = _session()
+        self.current = session
+        return session
+
+    def reopen(self) -> FocusSession:
+        assert self.current is not None
+        session = replace(self.current, state="active", detail=None)
+        self.current = session
+        return session
+
+    def end(self) -> None:
+        self.current = None
+
+
+def test_manager_starts_offline_session_and_refreshes_viewer_state(
+    qtbot: QtBot, desktop: Desktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window, _, _ = desktop
+    sessions = _SessionService()
+    monkeypatch.setattr(window, "session_service", sessions)
+    _go_to(window, "Focus Sessions")
+    target = _widget(window, QLabel, "sessionVM")
+    network = _widget(window, QComboBox, "sessionNetwork")
+    start = _widget(window, QPushButton, "sessionStartButton")
+    reopen = _widget(window, QPushButton, "sessionReopenButton")
+    end = _widget(window, QPushButton, "sessionEndButton")
+    refresh = _widget(window, QPushButton, "sessionRefreshButton")
+    status = _widget(window, QLabel, "sessionStatus")
+    qtbot.waitUntil(start.isEnabled)
+    assert target.text() == VM_NAME
+    assert network.currentText() == "Balanced"
+    assert network.count() == 2
+    network.setCurrentIndex(network.findText("Strict"))
+    start.click()
+    try:
+        qtbot.waitUntil(sessions.started_signal.is_set)
+        assert not start.isEnabled()
+        _go_to(window, "Dashboard")
+        assert _widget(window, QLabel, "dashboardStatus").isVisible()
+    finally:
+        sessions.finish_start.set()
+    _go_to(window, "Focus Sessions")
+    qtbot.waitUntil(end.isEnabled)
+    assert sessions.started == (VM_ID, PROFILE_ID, "strict")
+    assert "Strict (offline)" in status.text()
+    assert "elapsed" in status.text()
+    assert not reopen.isEnabled()
+
+    sessions.current = replace(
+        _session(), state="disconnected", detail="Viewer exited."
+    )
+    refresh.click()
+    qtbot.waitUntil(reopen.isEnabled)
+    assert "Viewer exited." in status.text()
+    reopen.click()
+    qtbot.waitUntil(lambda: "Active" in status.text())
+    assert not reopen.isEnabled()
+    end.click()
+    qtbot.waitUntil(start.isEnabled)
+    assert sessions.current is None
+    assert "No focus session" in status.text()
+
+
+def test_manager_offers_end_when_session_recovery_is_unresolved(
+    qtbot: QtBot, desktop: Desktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window, _, _ = desktop
+    sessions = _SessionService()
+    sessions.current = replace(
+        _session(), state="unresolved", detail="The VM definition changed."
+    )
+    monkeypatch.setattr(window, "session_service", sessions)
+    qtbot.waitUntil(lambda: not window.tasks.busy and window.status is not None)
+    _go_to(window, "Focus Sessions")
+
+    end = _widget(window, QPushButton, "sessionEndButton")
+    qtbot.waitUntil(end.isEnabled)
+    assert not _widget(window, QPushButton, "sessionStartButton").isEnabled()
+    assert not _widget(window, QPushButton, "sessionReopenButton").isEnabled()
+    assert (
+        "The VM definition changed." in _widget(window, QLabel, "sessionStatus").text()
+    )
