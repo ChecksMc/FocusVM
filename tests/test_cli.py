@@ -111,6 +111,93 @@ def test_doctor_json_reports_missing_prerequisites(
     ]
 
 
+@pytest.mark.parametrize(
+    ("pools", "expected_pool"),
+    [
+        (("default", "focusvm"), "focusvm"),
+        (("default", "spare"), "default"),
+        (("spare",), "spare"),
+    ],
+)
+def test_setup_chooses_preferred_pool_and_retains_saved_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    pools: tuple[str, ...],
+    expected_pool: str,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = tmp_path / "focusvm" / "config.toml"
+    checks = [Diagnostic("storage_pool", "ok", "Available")]
+    with (
+        patch("focusvm.setup.setup_pools", return_value=pools) as discover,
+        patch("focusvm.setup.diagnose", return_value=checks) as diagnose,
+    ):
+        assert main(["setup", "--json"]) == 0
+        created = json.loads(capsys.readouterr().out)
+        assert created == {
+            "path": str(path),
+            "storage_pool": expected_pool,
+            "created": True,
+            "checks": [{"name": "storage_pool", "status": "ok", "detail": "Available"}],
+            "ready": True,
+        }
+        assert diagnose.call_args.args[1] == expected_pool
+        store = ConfigStore(path)
+        store.update(lambda current: replace(current, vm_defaults=VMDefaults(cpus=8)))
+        original = path.read_bytes()
+        assert main(["setup", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out) == {**created, "created": False}
+        assert main(["setup", "--storage-pool", "different"]) == 2
+        assert "already configured" in capsys.readouterr().err
+    discover.assert_called_once_with()
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("pools", "message"),
+    [
+        ((), "No active directory storage pool has free space"),
+        (("sda", "sdb"), "Available pools are 'sda', 'sdb'"),
+    ],
+)
+def test_setup_reports_missing_or_ambiguous_pools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    pools: tuple[str, ...],
+    message: str,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    with patch("focusvm.setup.setup_pools", return_value=pools):
+        assert main(["setup"]) == 3
+        assert message in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_setup_keeps_failed_host_checks_and_avoids_writing_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    checks = [
+        Diagnostic("storage_pool", "ok", "Available"),
+        Diagnostic("qemu-img", "error", "Install qemu-img"),
+    ]
+    with (
+        patch("focusvm.setup.setup_pools") as discover,
+        patch("focusvm.setup.diagnose", return_value=checks) as diagnose,
+    ):
+        assert main(["setup", "--storage-pool", "spare", "--json"]) == 3
+    discover.assert_not_called()
+    assert diagnose.call_args.args[1] == "spare"
+    payload = json.loads(capsys.readouterr().out)
+    assert not payload["created"] and not payload["ready"]
+    assert payload["checks"][1]["detail"] == "Install qemu-img"
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_create_uses_config_defaults_and_prompts_for_password(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

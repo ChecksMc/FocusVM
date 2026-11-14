@@ -41,6 +41,7 @@ from .sessions import (
     SessionInputError,
     SessionService,
 )
+from .setup import setup_host
 from .tracking import (
     ActivityQueue,
     TrackingError,
@@ -62,6 +63,7 @@ EXIT_INTERRUPTED = 130
 class _Arguments(argparse.Namespace):
     command: Literal[
         "init",
+        "setup",
         "config",
         "doctor",
         "create",
@@ -82,6 +84,7 @@ class _Arguments(argparse.Namespace):
     ]
     session_command: Literal["start", "status", "reopen", "end"]
     storage_pool: str
+    setup_pool: str | None
     json: bool
     name: str
     image: Path
@@ -157,6 +160,14 @@ def _parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Name of the libvirt storage pool to use",
     )
+    setup = commands.add_parser("setup", help="Check the host and configure FocusVM")
+    setup.add_argument(
+        "--storage-pool",
+        dest="setup_pool",
+        metavar="NAME",
+        help="Choose a pool for first-time setup",
+    )
+    _json_option(setup)
     config = commands.add_parser("config", help="Inspect the configuration")
     config_commands = config.add_subparsers(required=True)
     config_commands.add_parser("validate", help="Check the current configuration")
@@ -503,6 +514,26 @@ def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
         _require_config(store)
         print(f"Configuration is valid at {store.path}")
         return 0
+
+    if args.command == "setup":
+        result = setup_host(paths, args.setup_pool)
+        if args.json:
+            print(json.dumps({**asdict(result), "ready": result.ready}, default=str))
+        else:
+            for item in result.checks:
+                if item.status != "ok":
+                    print(f"{item.status.upper():7} {item.name}: {item.detail}")
+            if result.ready:
+                action = "Saved" if result.created else "Using existing"
+                print(f"{action} FocusVM settings at {result.path}.")
+                print(f"Storage pool: {result.storage_pool}")
+                print("Open FocusVM from the app menu or run focusvm gui.")
+            else:
+                print(
+                    "Resolve the failed checks and run focusvm setup again.",
+                    file=sys.stderr,
+                )
+        return 0 if result.ready else EXIT_UNAVAILABLE
 
     if args.command == "doctor":
         diagnostics = diagnose_configured(paths)

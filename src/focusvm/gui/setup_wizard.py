@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from ..config import ConfigError, ConfigPaths, Settings
 from ..diagnostics import Diagnostic, diagnose
+from ..setup import preferred_pool, setup_pools
 from .tasks import TaskRunner
 
 _CHECK_LABELS = {
@@ -84,7 +85,6 @@ class _HostPage(QWizardPage):
 
         self._check = QPushButton("&Check host")
         self._check.setObjectName("setupCheckHost")
-        self._check.setEnabled(False)
         self._check.setAutoDefault(False)
         self._check.clicked.connect(self._run_checks)
 
@@ -96,9 +96,7 @@ class _HostPage(QWizardPage):
         pool_label.setBuddy(self._pool)
         pool_form.addRow(pool_label, pool_row)
 
-        hint = QLabel(
-            "To list pools, run virsh --connect qemu:///system pool-list --all."
-        )
+        hint = QLabel("Leave the name blank to detect a pool, or enter one to use it.")
         hint.setWordWrap(True)
         hint.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
@@ -138,26 +136,56 @@ class _HostPage(QWizardPage):
         self.checked_pool = None
         self._results.setRowCount(0)
         self._summary.setText("Check the host before saving settings.")
-        self._check.setEnabled(bool(self._pool.text().strip()) and not self.checking)
+        self._check.setEnabled(not self.checking)
         self.completeChanged.emit()
 
     def _run_checks(self) -> None:
         if self.checking or not self._check.isEnabled():
             return
         self._clear_checks()
+        selected = self._pool.text()
         try:
-            pool = Settings.for_pool(self._pool.text()).application.storage_pool
+            if selected:
+                selected = Settings.for_pool(selected).application.storage_pool
         except ConfigError as error:
             self._summary.setText(f"Invalid pool name. {error}")
             return
 
         self._set_checking(True)
-        self._summary.setText("Checking the host and storage pool…")
+        self._summary.setText("Checking the host and storage pools…")
         paths = self._paths
+
+        def inspect() -> tuple[str, list[Diagnostic]]:
+            if selected:
+                return selected, diagnose(paths, selected)
+            pools = setup_pools()
+            automatic = preferred_pool(pools)
+            if automatic is not None:
+                return automatic, diagnose(paths, automatic)
+            detail = (
+                f"Choose a storage pool from {', '.join(pools)}."
+                if pools
+                else "No active directory-backed storage pool has free space."
+            )
+            return "", [
+                Diagnostic("storage_pool", "error", detail),
+                *(
+                    check
+                    for check in diagnose(paths, None)
+                    if check.name != "storage_pool"
+                ),
+            ]
+
+        def loaded(result: tuple[str, list[Diagnostic]]) -> None:
+            pool, checks = result
+            if pool and not selected:
+                self._pool.setText(pool)
+            self._show_checks(pool, checks)
+
         if not self._tasks.submit(
             "Check host",
-            lambda: diagnose(paths, pool),
-            lambda results: self._show_checks(pool, results),
+            inspect,
+            loaded,
             self._show_error,
         ):
             self._show_error("Try again when the current check has finished.")
@@ -165,7 +193,7 @@ class _HostPage(QWizardPage):
     def _set_checking(self, checking: bool) -> None:
         self.checking = checking
         self._pool.setEnabled(not checking)
-        self._check.setEnabled(not checking and bool(self._pool.text().strip()))
+        self._check.setEnabled(not checking)
         self.wizard().button(QWizard.WizardButton.CancelButton).setEnabled(not checking)
         self.completeChanged.emit()
 

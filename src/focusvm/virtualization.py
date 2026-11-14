@@ -116,6 +116,7 @@ class _Volume(Protocol):
 
 
 class _Pool(Protocol):
+    def name(self) -> str: ...
     def isActive(self) -> int: ...
     def XMLDesc(self, flags: int) -> str: ...
     def info(self) -> list[int]: ...
@@ -148,6 +149,7 @@ class _Connection(Protocol):
         virttype: str,
         flags: int,
     ) -> str: ...
+    def listAllStoragePools(self, flags: int) -> list[_Pool]: ...
     def storagePoolLookupByName(self, name: str) -> _Pool: ...
     def storageVolLookupByKey(self, key: str) -> _Volume: ...
     def newStream(self, flags: int) -> _Stream: ...
@@ -166,6 +168,8 @@ class _Libvirt(Protocol):
     VIR_DOMAIN_PAUSED: int
     VIR_DOMAIN_SHUTDOWN_ACPI_POWER_BTN: int
     VIR_STORAGE_VOL_GET_PHYSICAL: int
+    VIR_CONNECT_LIST_STORAGE_POOLS_ACTIVE: int
+    VIR_CONNECT_LIST_STORAGE_POOLS_DIR: int
 
     def open(self, uri: str) -> _Connection | None: ...
     def openReadOnly(self, uri: str) -> _Connection | None: ...
@@ -223,6 +227,16 @@ class LibvirtBackend:
         with self._operation(f"Cannot inspect storage pool {pool!r}"):
             _, _, _, available = self._directory_pool(pool).info()
             return PoolStatus(pool, available)
+
+    def available_storage_pools(self) -> tuple[str, ...]:
+        """List active directory pools that report free space."""
+        with self._operation("Cannot list active directory storage pools"):
+            flags = (
+                self._driver.VIR_CONNECT_LIST_STORAGE_POOLS_ACTIVE
+                | self._driver.VIR_CONNECT_LIST_STORAGE_POOLS_DIR
+            )
+            pools = self._connection.listAllStoragePools(flags)
+            return tuple(sorted(pool.name() for pool in pools if pool.info()[3] > 0))
 
     def import_base(
         self, pool: str, path: Path, sha256: str, size_bytes: int, owner_id: UUID

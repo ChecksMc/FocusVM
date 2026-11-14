@@ -164,3 +164,20 @@ def test_setup_surfaces_host_query_exception(
 
     assert "Cannot connect to qemu:///system." in _summary(wizard).text()
     assert not wizard.button(QWizard.WizardButton.FinishButton).isEnabled()
+
+
+def test_setup_finds_and_checks_a_pool_when_name_is_blank(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def host_checks(_paths: ConfigPaths, pool: str | None) -> list[Diagnostic]:
+        assert pool == "focusvm"
+        return [Diagnostic("storage_pool", "ok", "Pool is active.")]
+
+    monkeypatch.setattr(setup_wizard, "setup_pools", lambda: ("default", "focusvm"))
+    monkeypatch.setattr(setup_wizard, "diagnose", host_checks)
+    wizard = _wizard(qtbot, tmp_path)
+    assert _pool(wizard).text() == ""
+    _check(wizard).click()
+    finish = wizard.button(QWizard.WizardButton.FinishButton)
+    qtbot.waitUntil(finish.isEnabled)
+    assert _pool(wizard).text() == wizard.storage_pool == "focusvm"

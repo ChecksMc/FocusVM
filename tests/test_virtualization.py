@@ -51,6 +51,8 @@ class Driver:
     VIR_DOMAIN_PAUSED = 3
     VIR_DOMAIN_SHUTDOWN_ACPI_POWER_BTN = 1
     VIR_STORAGE_VOL_GET_PHYSICAL = 1
+    VIR_CONNECT_LIST_STORAGE_POOLS_ACTIVE = 2
+    VIR_CONNECT_LIST_STORAGE_POOLS_DIR = 64
 
 
 class StorageVolume:
@@ -204,6 +206,25 @@ def test_define_creates_offline_domain_and_reports_resources() -> None:
     assert root.find("devices/disk[@device='cdrom']/readonly") is not None
     assert backend.define(DEFINITION) == vm
     assert connection.define_calls == 1
+
+
+def test_discover_directory_storage_pools_looks_for_available_space() -> None:
+    connection = Mock(spec=_Connection)
+    pools: list[Mock] = []
+    for name, space in (("focusvm", 48), ("full", 0), ("backup", 32)):
+        pool = Mock(spec=_Pool)
+        pool.name.return_value = name
+        pool.info.return_value = [2, 128, 128 - space, space]
+        pools.append(pool)
+    connection.listAllStoragePools.return_value = pools
+    backend = LibvirtBackend(
+        cast("_Libvirt", Driver()), cast("_Connection", connection)
+    )
+    assert backend.available_storage_pools() == ("backup", "focusvm")
+    connection.listAllStoragePools.assert_called_once_with(
+        Driver.VIR_CONNECT_LIST_STORAGE_POOLS_ACTIVE
+        | Driver.VIR_CONNECT_LIST_STORAGE_POOLS_DIR
+    )
 
 
 def test_define_does_not_replace_foreign_name_or_uuid() -> None:
