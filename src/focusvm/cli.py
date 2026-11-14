@@ -7,6 +7,7 @@ import sys
 import warnings
 from collections.abc import Sequence
 from dataclasses import asdict
+from datetime import date
 from getpass import GetPassWarning, getpass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -25,14 +26,16 @@ from .git_sync import (
 )
 from .guest_export import GuestExportError, export_bundle
 from .gui import GUIUnavailable, launch
+from .journal import Journal, JournalEntry, JournalError, JournalInputError
 from .local_state import PrivateFileError
+from .packages import PackageInputError, build_wheel_media
+from .profiles import PROFILES
 from .provisioning import ImageInput, ProvisioningError, ProvisioningUnavailable
+from .research import Research, ResearchError, ResearchInputError
 from .resources import Resource, ResourceError, ResourceLibrary, ResourceUnavailable
 from .sessions import (
-    DEFAULT_NETWORK,
     OFFLINE_NETWORKS,
     PROFILE_ID,
-    PROFILE_NAME,
     FocusSession,
     SessionError,
     SessionInputError,
@@ -73,6 +76,9 @@ class _Arguments(argparse.Namespace):
         "resources",
         "sync",
         "tracking",
+        "journal",
+        "research",
+        "packages",
     ]
     session_command: Literal["start", "status", "reopen", "end"]
     storage_pool: str
@@ -87,8 +93,10 @@ class _Arguments(argparse.Namespace):
     memory_mib: int | None
     disk_gib: int | None
     timeout: int
-    profile: str
-    network: str
+    profile: str | None
+    network: str | None
+    duration_minutes: int | None
+    cage: bool
     resource_action: Literal[
         "add", "list", "search", "remove", "open", "build", "attach", "eject"
     ]
@@ -117,6 +125,20 @@ class _Arguments(argparse.Namespace):
     timestamp: float | None
     prompt_key: bool
     guest_path: str
+    journal_action: Literal["record", "list", "remove", "stats"]
+    research_action: Literal["hosts", "allow", "revoke", "save"]
+    package_action: Literal["build", "attach"]
+    entry_id: str
+    day: date
+    journal_minutes: int
+    completed: list[str]
+    problems: list[str]
+    solved: list[str]
+    references: list[str]
+    notes: str
+    host: str
+    url: str
+    wheels: list[Path]
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -195,13 +217,20 @@ def _parser() -> argparse.ArgumentParser:
     )
     _vm_options(session_start)
     session_start.add_argument(
-        "--profile", choices=(PROFILE_ID,), default=PROFILE_ID, help="Focus profile"
+        "--profile",
+        choices=PROFILES,
+        help="Focus profile (uses the configured default)",
     )
     session_start.add_argument(
         "--network",
         choices=(*OFFLINE_NETWORKS, "flexible"),
-        default=DEFAULT_NETWORK,
         help="Guest network policy (Flexible is unavailable)",
+    )
+    session_start.add_argument(
+        "--duration-minutes", type=int, help="Optional Contest timer"
+    )
+    session_start.add_argument(
+        "--cage", action="store_true", help="Use nested Cage on Wayland"
     )
     _json_option(sessions.add_parser("status", help="Read the current focus session"))
     _json_option(sessions.add_parser("reopen", help="Reopen the fullscreen viewer"))
@@ -219,7 +248,69 @@ def _parser() -> argparse.ArgumentParser:
         commands.add_parser("sync", help="Transfer Git commits"),
         commands.add_parser("tracking", help="Manage opt-in WakaTime activity"),
     )
+    _advanced_parsers(
+        commands.add_parser("journal", help="Record and summarize local sessions"),
+        commands.add_parser(
+            "research", help="Save approved HTTPS references for offline use"
+        ),
+        commands.add_parser("packages", help="Prepare offline Python wheel media"),
+    )
     return parser
+
+
+def _advanced_parsers(
+    journal: argparse.ArgumentParser,
+    research: argparse.ArgumentParser,
+    packages: argparse.ArgumentParser,
+) -> None:
+    entries = journal.add_subparsers(dest="journal_action", required=True)
+    record = entries.add_parser("record", help="Write a local journal entry")
+    record.add_argument("--project", required=True)
+    record.add_argument(
+        "--date", dest="day", type=date.fromisoformat, default=date.today()
+    )
+    record.add_argument("--minutes", dest="journal_minutes", required=True, type=int)
+    for name in ("completed", "problems", "solved", "references"):
+        record.add_argument(f"--{name}", action="append", default=[])
+    record.add_argument("--notes", default="")
+    _json_option(record)
+    for name, help_text in (
+        ("list", "List entries"),
+        ("stats", "Summarize recorded time"),
+    ):
+        subcommand = entries.add_parser(name, help=help_text)
+        subcommand.add_argument("--project")
+        _json_option(subcommand)
+    remove = entries.add_parser("remove", help="Delete one journal entry")
+    remove.add_argument("entry_id")
+    _json_option(remove)
+
+    sources = research.add_subparsers(dest="research_action", required=True)
+    _json_option(sources.add_parser("hosts", help="List approved exact hostnames"))
+    for name, help_text in (
+        ("allow", "Approve a public hostname"),
+        ("revoke", "Revoke a hostname"),
+    ):
+        host = sources.add_parser(name, help=help_text)
+        host.add_argument("host")
+        _json_option(host)
+    save = sources.add_parser("save", help="Save one page as plain text in Markdown")
+    save.add_argument("url")
+    save.add_argument("--output", type=Path, required=True)
+    _json_option(save)
+
+    package_actions = packages.add_subparsers(dest="package_action", required=True)
+    build = package_actions.add_parser(
+        "build", help="Build a disc from selected wheel files"
+    )
+    build.add_argument("--output", type=Path, required=True)
+    _json_option(build)
+    attach = package_actions.add_parser(
+        "attach", help="Attach a wheel disc to a stopped VM"
+    )
+    _vm_options(attach)
+    for action in (build, attach):
+        action.add_argument("wheels", type=Path, nargs="+")
 
 
 def _maintenance_parsers(
@@ -350,6 +441,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         ResourceError,
         GitSyncInputError,
         TrackingInputError,
+        JournalInputError,
+        ResearchInputError,
+        PackageInputError,
     ) as error:
         print(f"focusvm: {error}", file=sys.stderr)
         return EXIT_INVALID_INPUT
@@ -371,6 +465,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         GitSyncError,
         GuestExportError,
         TrackingError,
+        JournalError,
+        ResearchError,
         subprocess.SubprocessError,
     ) as error:
         print(f"focusvm: {error}", file=sys.stderr)
@@ -384,23 +480,17 @@ def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
     if args.command == "gui":
         return launch(paths)
     if args.command == "profiles":
+        profiles = [{"id": key, **asdict(profile)} for key, profile in PROFILES.items()]
         if args.json:
-            print(
-                json.dumps(
-                    [
-                        {
-                            "id": PROFILE_ID,
-                            "name": PROFILE_NAME,
-                            "network": DEFAULT_NETWORK,
-                        }
-                    ]
-                )
-            )
+            print(json.dumps(profiles))
         else:
-            print(
-                f"{PROFILE_NAME} ({PROFILE_ID}) uses {DEFAULT_NETWORK} networking by default."
-            )
+            for key, profile in PROFILES.items():
+                print(
+                    f"{profile.name} ({key}) uses {profile.network} networking by default."
+                )
         return 0
+    if args.command == "journal":
+        return _dispatch_journal(args, Journal(paths.state_dir))
     store = ConfigStore(paths.config_file)
     if args.command == "init":
         if store.initialize(Settings.for_pool(args.storage_pool)):
@@ -431,6 +521,22 @@ def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
         )
 
     service = VMService(paths.state_dir, paths.cache_dir)
+    if args.command in ("packages", "research"):
+        sessions = SessionService(paths.state_dir, service)
+        if args.command == "research":
+            return _dispatch_research(args, Research(paths.config_dir), sessions)
+        if args.package_action == "build":
+            _print_output(build_wheel_media(args.wheels, args.output), args.json)
+        else:
+            target = _target_vm(args.vm, store)
+            with (
+                sessions.outside_session(),
+                TemporaryDirectory(prefix="focusvm-wheels-") as directory,
+            ):
+                image = build_wheel_media(args.wheels, Path(directory) / "wheels.iso")
+                status = service.attach_resources(target, image)
+            _print_status(status, json_output=args.json)
+        return 0
     if args.command in ("resources", "sync", "tracking"):
         sessions = SessionService(paths.state_dir, service)
         if args.command == "resources":
@@ -632,14 +738,30 @@ def _dispatch_session(
 ) -> int:
     session: FocusSession | None
     if args.session_command == "start":
-        target = _target_vm(args.vm, store)
+        settings = (
+            _load_config(store) if args.vm is None or args.profile is None else None
+        )
+        target = (
+            args.vm
+            if args.vm is not None or settings is None
+            else settings.application.default_vm
+        )
+        profile = args.profile or (
+            settings.application.default_profile if settings is not None else PROFILE_ID
+        )
         if not args.json:
-            _print_viewer_controls()
-        session = service.start(target, args.profile, args.network)
+            _print_viewer_controls(cage=args.cage)
+        session = service.start(
+            target,
+            profile,
+            args.network,
+            duration_minutes=args.duration_minutes,
+            cage=args.cage,
+        )
     elif args.session_command == "reopen":
-        if not args.json:
-            _print_viewer_controls()
         session = service.reopen()
+        if not args.json:
+            _print_viewer_controls(cage=session.cage)
     elif args.session_command == "end":
         service.end()
         if args.json:
@@ -659,7 +781,13 @@ def _target_vm(target: UUID | None, store: ConfigStore) -> UUID | None:
     return target
 
 
-def _print_viewer_controls() -> None:
+def _print_viewer_controls(*, cage: bool) -> None:
+    if cage:
+        print(
+            "Close the Cage host window, or run focusvm session end from another host terminal.",
+            flush=True,
+        )
+        return
     print(
         "Press Shift+F12 to release input or Shift+F11 to toggle fullscreen. "
         "Run focusvm session end from a host terminal to end the session.",
@@ -672,24 +800,102 @@ def _print_session(session: FocusSession | None, *, json_output: bool) -> None:
         print("null" if json_output else "No focus session.")
         return
     if json_output:
-        print(
-            json.dumps(
-                {
-                    "vm": str(session.vm),
-                    "vm_name": session.vm_name,
-                    "profile": session.profile,
-                    "network": session.network,
-                    "state": session.state,
-                    "started_at": session.started_at,
-                    "detail": session.detail,
-                }
-            )
-        )
+        result = asdict(session)
+        if not session.cage:
+            result.pop("cage")
+        if session.deadline is None:
+            result.pop("deadline")
+        else:
+            result["remaining_seconds"] = session.remaining_seconds()
+        print(json.dumps(result, default=str))
         return
     print(f"Focus session for {session.vm_name} ({session.vm}) is {session.state}.")
     print(f"Profile {session.profile} uses {session.network} networking.")
+    if session.cage:
+        print("Viewer mode: Cage.")
+    if (remaining := session.remaining_seconds()) is not None:
+        print(
+            f"Contest timer: {remaining // 60}:{remaining % 60:02} remaining."
+            if remaining
+            else "Contest timer expired."
+        )
     if session.detail:
         print(session.detail)
+
+
+def _print_output(path: Path, json_output: bool) -> None:
+    print(json.dumps({"path": str(path)}) if json_output else path)
+
+
+def _dispatch_journal(args: _Arguments, journal: Journal) -> int:
+    if args.journal_action == "stats":
+        stats = journal.stats(args.project)
+        if args.json:
+            print(json.dumps(asdict(stats)))
+        else:
+            print(
+                f"{stats.sessions} recorded sessions · {stats.duration_minutes} minutes"
+            )
+            for project in stats.projects:
+                print(
+                    f"{project.project} · {project.sessions} sessions · {project.duration_minutes} minutes"
+                )
+        return 0
+    entries: tuple[JournalEntry, ...]
+    if args.journal_action == "record":
+        entries = (
+            journal.record(
+                args.project,
+                args.day,
+                args.journal_minutes,
+                completed=args.completed,
+                problems=args.problems,
+                solved=args.solved,
+                references=args.references,
+                notes=args.notes,
+            ),
+        )
+    elif args.journal_action == "remove":
+        entries = (journal.remove(args.entry_id),)
+    else:
+        entries = journal.list(args.project)
+    if args.json:
+        print(json.dumps([asdict(entry) for entry in entries]))
+    else:
+        for entry in entries:
+            print(
+                f"{entry.id}  {entry.day}  {entry.project}  {entry.duration_minutes} min"
+            )
+            for label, items in (
+                ("Completed", entry.completed),
+                ("Problems", entry.problems),
+                ("Solved independently", entry.solved),
+                ("References", entry.references),
+            ):
+                for item in items:
+                    print(f"  {label} · {item}")
+            if entry.notes:
+                print(f"  Notes · {entry.notes}")
+    return 0
+
+
+def _dispatch_research(
+    args: _Arguments, research: Research, sessions: SessionService
+) -> int:
+    if args.research_action == "save":
+        with sessions.outside_session():
+            _print_output(research.save(args.url, args.output), args.json)
+        return 0
+    hosts = (
+        research.hosts()
+        if args.research_action == "hosts"
+        else research.update_host(args.host, allow=args.research_action == "allow")
+    )
+    if args.json:
+        print(json.dumps(hosts))
+    else:
+        print("\n".join(hosts) or "No approved research hosts.")
+    return 0
 
 
 def _load_config(store: ConfigStore) -> Settings | None:

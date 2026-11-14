@@ -187,7 +187,9 @@ def test_start_session_uses_configured_vm_and_prints_public_json(
     )
     with patch("focusvm.cli.SessionService.start", return_value=session) as start:
         assert main(["session", "start", "--json"]) == 0
-    start.assert_called_once_with(vm, PROFILE_ID, DEFAULT_NETWORK)
+    start.assert_called_once_with(
+        vm, PROFILE_ID, None, duration_minutes=None, cage=False
+    )
     captured = capsys.readouterr()
     assert captured.err == ""
     assert json.loads(captured.out) == {
@@ -220,7 +222,9 @@ def test_start_session_uses_explicit_vm_and_prints_controls(
     )
     with patch("focusvm.cli.SessionService.start", return_value=session) as start:
         assert main(["session", "start", "--vm", str(vm), "--network", "strict"]) == 0
-    start.assert_called_once_with(vm, PROFILE_ID, "strict")
+    start.assert_called_once_with(
+        vm, PROFILE_ID, "strict", duration_minutes=None, cage=False
+    )
     out = capsys.readouterr().out
     assert "Shift+F11" in out and "Shift+F12" in out
     assert "focusvm session end" in out
@@ -251,7 +255,9 @@ def test_session_unavailable_and_reopen_failure_keep_stdout_clean(
         side_effect=VirtualizationUnavailable("Flexible networking is unavailable"),
     ) as start:
         assert main(["session", "start", "--network", "flexible", "--json"]) == 3
-    start.assert_called_once_with(None, PROFILE_ID, "flexible")
+    start.assert_called_once_with(
+        None, PROFILE_ID, "flexible", duration_minutes=None, cage=False
+    )
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "Flexible networking is unavailable" in captured.err
@@ -280,7 +286,9 @@ def test_profiles_lists_only_implemented_profiles(
 ) -> None:
     assert main(["profiles", "list", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == [
-        {"id": "deep-work", "name": "Deep Work", "network": "balanced"}
+        {"id": "deep-work", "name": "Deep Work", "network": "balanced"},
+        {"id": "contest", "name": "Contest", "network": "strict"},
+        {"id": "research", "name": "Research", "network": "balanced"},
     ]
     assert not session_paths.config_file.exists()
 
@@ -312,6 +320,11 @@ def test_resource_library_cli_uses_data_home(
             "sync_remote",
         ),
         (["tracking", "sync", "--prompt-key"], "_hidden_input"),
+        (
+            ["research", "save", "https://example.org", "--output", "reference.md"],
+            "Research.save",
+        ),
+        (["packages", "attach", "example.whl"], "build_wheel_media"),
         (["resources", "attach", "example"], "ResourceLibrary.build_iso"),
         (
             [
@@ -340,3 +353,31 @@ def test_maintenance_cli_refuses_side_effects_during_focus(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "End the focus session" in captured.err
+
+
+def test_journal_cli_records_and_summarizes_a_project(
+    session_paths: ConfigPaths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            [
+                "journal",
+                "record",
+                "--project",
+                "practice",
+                "--minutes",
+                "30",
+                "--solved",
+                "Heap bug",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    [entry] = json.loads(capsys.readouterr().out)
+    assert entry["solved"] == ["Heap bug"]
+    assert main(["journal", "stats", "--project", "practice", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["duration_minutes"] == 30
+    assert main(["journal", "remove", entry["id"], "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == [entry]
+    assert not session_paths.config_file.exists()
