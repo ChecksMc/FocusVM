@@ -2,7 +2,7 @@
 
 FocusVM is a Linux project for practicing independent programming. Its development VM is designed to keep a terminal, tools, and local references close at hand so that reaching for AI assistance or switching tasks takes a deliberate step. You can leave a focus session at any time.
 
-The first usable milestone will pair a PySide6 desktop manager with a CLI that uses the same configuration and libvirt services. It will create and run an offline Fedora guest with Vim, Git, C++, Python, and debugging tools, and open it in a fullscreen viewer. Fedora KDE Plasma and Fedora Workstation with GNOME, both on Wayland, are the first verification targets. Other Linux distributions may work with the same dependencies and permissions.
+The PySide6 manager and CLI share configuration and libvirt services. They can run an offline Fedora guest with Vim, Git, C++, Python, and debugging tools, and open it in a fullscreen focus session. Fedora KDE Plasma and Fedora Workstation with GNOME, both on Wayland, are the first verification targets. Other Linux distributions may work with the same dependencies and permissions.
 
 ## Install and check the host
 
@@ -28,7 +28,19 @@ python -m pip install -e '.[gui]'
 focusvm gui
 ```
 
-The manager provides a first-run wizard, host checks, VM management, and shared settings. The [Fedora guest build guide](docs/guest.md#build-the-base-image) shows how to build the offline development image. Fullscreen focus sessions are a later milestone. [Desktop setup and usage](docs/setup.md#desktop-manager)
+The manager provides a first-run wizard, host checks, VM management, and shared settings. The [Fedora guest build guide](docs/guest.md#build-the-base-image) shows how to build the offline development image. [Desktop setup and usage](docs/setup.md#desktop-manager)
+
+## Start a focus session
+
+Select your VM in the desktop manager, then open **Focus Sessions** and choose **Start Focus Session**. From a host terminal you can also run the following commands.
+
+```sh
+focusvm session start --profile deep-work
+focusvm session status
+focusvm session end
+```
+
+**Shift+F12** releases input and **Shift+F11** toggles fullscreen. Ending the session closes its viewer and leaves the offline guest running. [Focus sessions and recovery](docs/sessions.md#start-end-and-recover)
 
 ## Design and setup
 

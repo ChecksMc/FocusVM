@@ -108,6 +108,8 @@ In **Virtual Machines**, use **Create VM** with the [signed image inputs](guest.
 
 In **Settings**, set the pool for new VMs, the default VM, creation resources, and the appearance preference. Changes are saved to the same XDG configuration as the CLI. The System appearance follows the Qt platform theme. [Qt appearance settings](https://doc.qt.io/qt-6/qstylehints.html#setColorScheme)
 
+Use **Focus Sessions** to open the selected VM in fullscreen and to reopen or end an existing session. The fullscreen viewer requires a local Wayland or X11 display and Linux pidfd support. [Focus sessions and recovery](sessions.md#start-end-and-recover)
+
 ## Development workflow
 
 Create a virtual environment from the repository root. Phase 1 uses Python 3.12 or newer for the configuration service and CLI. The development tools are declared in `pyproject.toml`.

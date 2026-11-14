@@ -22,7 +22,7 @@ guest/               Guest build recipe and image manifest tooling
 tests/               Unit, GUI, and KVM integration suites
 ```
 
-Both frontends use the shared configuration, diagnostics, and VM services. The core remains free of Qt imports. The Qt manager runs libvirt, image, and file operations on a background thread and receives results through Qt signals. Its pages cover the dashboard, VM management, and settings. The viewer command builder supplies the attached local console used by the manager. Later sessions will coordinate VM policy and viewer lifecycle.
+Both frontends use the shared configuration, diagnostics, VM, and session services. The core remains free of Qt imports. The Qt manager runs libvirt, session, image, and file operations on a background thread and receives results through Qt signals. Its pages cover the dashboard, VM management, settings, and focus sessions.
 
 Use the native `libvirt-python` bindings for management. Open `qemu:///system` explicitly and require KVM for the reference release. `virsh` is useful for host diagnostics and recovery. Require a usable system libvirt connection and a configured directory-backed storage pool. Libvirt and the host's access controls govern permission checks. The application checks for missing privileges and reports the failing operation to the user. [QEMU/KVM driver](https://libvirt.org/drvqemu.html) · [Libvirt storage pools and volumes](https://libvirt.org/storage.html)
 
@@ -81,8 +81,9 @@ The session service tracks one active focus session per host user and reads curr
 | `focusvm list` | Available | List VM UUIDs and creation phases from the local inventory |
 | `focusvm start`, `focusvm stop`, `focusvm status` | Available | Start, stop, or inspect the selected VM |
 | `focusvm configure` | Available | Change CPU and RAM on a stopped VM |
-| `focusvm session start --profile deep-work` | Planned | Validate the profile, start or adopt the offline guest, and open the viewer |
-| `focusvm session end` | Planned | End the session and release the viewer |
-| `focusvm profiles list` | Planned | Inspect available profiles |
+| `focusvm session start --profile deep-work` | Available | Validate the profile, start or adopt the offline guest, and open the fullscreen viewer |
+| `focusvm session status`, `focusvm session reopen` | Available | Inspect the recorded session or reopen a disconnected viewer |
+| `focusvm session end` | Available | End the session and close its viewer |
+| `focusvm profiles list` | Available | List the built-in Deep Work profile |
 
 Resolve the explicit VM selection or configured default to a managed UUID. Provide plain-text errors on stderr and stable JSON output for status and diagnostics. Reserve exit codes for success, invalid input, unavailable prerequisites, and operation failure. Optional integration commands appear when their workflows are implemented.

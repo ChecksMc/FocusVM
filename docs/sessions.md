@@ -1,6 +1,6 @@
 # Focus sessions, profiles, and networking
 
-This document describes the planned behavior. See [Architecture](architecture.md) for state ownership and [Setup](setup.md) for the host and guest prerequisites.
+Deep Work and the two offline network policies are available in the CLI and desktop manager. See [Architecture](architecture.md) for state ownership and [Setup](setup.md) for the host and guest prerequisites.
 
 ## Profiles
 
@@ -12,7 +12,7 @@ Built-in profiles have stable IDs and can be duplicated for customization. Custo
 
 ## Offline networking
 
-| Policy | First usable build | Planned extensions |
+| Policy | Current behavior | Planned extensions |
 | --- | --- | --- |
 | Strict | The guest has no virtual network interface. Local tools, Git, and resources remain usable. | Package installs use preloaded artifacts. Remote synchronization waits for an explicit action outside the session. |
 | Balanced (default) | The same offline guest configuration as Strict. | Explicit Git, WakaTime, and package operations outside the session. Optional approved research access requires an implemented policy. |
@@ -28,10 +28,12 @@ Flexible networking must define what a destination rule matches, how names and I
 
 The GUI and CLI use the same session service, with one focus session at a time per host user. Session state is distinct from VM state. For example, a disconnected session can have a running offline guest.
 
-1. **Start.** Acquire the shared mutation lock, reconcile any prior operation, and validate the profile, VM UUID, network policy, and display requirements. Write a durable start intent before applying changes. Boot or reuse the verified offline domain, then launch `virt-viewer` with the domain UUID, `--connect qemu:///system`, `--attach`, and `--full-screen` for the default profile. Record VM and viewer status separately. A failed viewer launch leaves the offline VM available for retry.
-2. **Exit fullscreen.** Display the input-release and fullscreen shortcuts before launch and in the manager. The candidate bindings are Shift+F12 for release and Shift+F11 for fullscreen toggle. Verify both on the reference desktops and provide the viewer's window controls as another exit route. Wayland compositors may reserve Alt+Tab, Super, or other shortcuts. Input capture follows viewer and compositor capabilities. [virt-viewer manual](https://gitlab.com/virt-viewer/virt-viewer/-/raw/master/man/virt-viewer.pod), [Wayland shortcut-inhibition protocol](https://raw.githubusercontent.com/wayland-mirror/wayland-protocols/main/unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml).
-3. **End.** Use **End Focus Session** in the manager or `focusvm session end` in a host terminal. Close the session's viewer and finalize the session record. The guest remains running offline so unsaved work stays accessible. **Stop VM** requests graceful shutdown separately. An expired timer, a closed viewer, and an interrupted session preserve the guest's work.
-4. **Recover.** A closed or crashed viewer marks the session disconnected and offers reopening or ending it. At the next manager launch or CLI operation, reconcile the durable record with the domain UUID, actual VM configuration, and verified viewer process identity. Reopen the viewer only when the session policy still matches. If process ownership is uncertain, ask the user to close the viewer window directly. If libvirt cannot be queried or the policy has drifted, report the unresolved state and block new session starts until recovery. Ending an already finished session is safe to retry.
+1. **Start.** In the manager, select a VM in **Virtual Machines**, open **Focus Sessions**, choose Balanced or Strict, and select **Start Focus Session**. The CLI equivalent is `focusvm session start --profile deep-work --network balanced`. Add `--vm UUID` to override the configured default or sole managed VM. Both frontends check the offline policy and save a private session record before boot or viewer launch.
+2. **Exit fullscreen.** Use **Shift+F12** to release input and **Shift+F11** to toggle fullscreen. The viewer's window controls also let you close it. Wayland compositors can reserve Alt+Tab, Super, or other shortcuts. [virt-viewer manual](https://gitlab.com/virt-viewer/virt-viewer/-/raw/master/man/virt-viewer.pod) · [Wayland shortcut inhibition](https://raw.githubusercontent.com/wayland-mirror/wayland-protocols/main/unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml)
+3. **End.** Use **End Focus Session** or `focusvm session end` in a host terminal. Ending closes the identified fullscreen viewer and clears the session record. The guest keeps its current power state so unsaved work stays accessible. To shut down the guest, use **Shut Down** or `focusvm stop` separately.
+4. **Recover.** Use `focusvm session status` or the manager to see whether the viewer is active, disconnected, or unresolved. **Reopen Viewer** or `focusvm session reopen` rechecks offline policy and reconnects, booting the guest if it was stopped. End the existing session before starting another. If the viewer cannot be identified safely, close its window directly and retry End. Viewer errors include the log location under `$XDG_STATE_HOME/focusvm/focus-viewer.log`.
+
+The viewer runs independently of the CLI or manager that launched it. The session record and process identity let a later invocation recover it. FocusVM uses Linux pidfds for safe process signaling. [Python pidfd API](https://docs.python.org/3.12/library/os.html#os.pidfd_open)
 
 Ordinary fullscreen uses the viewer's regular quit controls. Advanced kiosk integration with Cage or a dedicated Wayland session is a later option contingent on a tested emergency exit and safe recovery after viewer or compositor failure.
 
