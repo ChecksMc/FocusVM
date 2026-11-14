@@ -1,6 +1,8 @@
 """Durable, voluntary offline focus sessions shared by the CLI and manager."""
 
 import json
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -129,6 +131,16 @@ class SessionService:
                 return
             close_focus_viewer(intent.token)
             self._save(None)
+
+    @contextmanager
+    def outside_session(self) -> Generator[None]:
+        """Exclude a focus session for the lifetime of a host maintenance action."""
+        with file_lock(self.path):
+            if self._load() is not None:
+                raise SessionInputError(
+                    "End the focus session before performing this operation"
+                )
+            yield
 
     def _launch(self, intent: _Intent, command: tuple[str, list[str]]) -> FocusSession:
         # VMService refuses unrecognized devices, shares, or external networking before

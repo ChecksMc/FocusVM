@@ -163,6 +163,7 @@ def session_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ConfigPath
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     return ConfigPaths.from_environment()
 
 
@@ -282,3 +283,60 @@ def test_profiles_lists_only_implemented_profiles(
         {"id": "deep-work", "name": "Deep Work", "network": "balanced"}
     ]
     assert not session_paths.config_file.exists()
+
+
+def test_resource_library_cli_uses_data_home(
+    session_paths: ConfigPaths, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    reference = tmp_path / "CPP-reference.md"
+    reference.write_text("# Reference", encoding="utf-8")
+    assert main(["resources", "add", str(reference), "--json"]) == 0
+    [entry] = json.loads(capsys.readouterr().out)
+    assert entry["name"] == reference.name
+    assert entry["kind"] == "markdown"
+    assert (
+        session_paths.data_dir / "resources" / entry["id"] / reference.name
+    ).is_file()
+    assert main(["resources", "search", "cpp", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == [entry]
+    assert main(["resources", "remove", entry["id"]]) == 0
+    assert reference.is_file()
+    assert not session_paths.config_file.exists()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "operation"),
+    [
+        (
+            ["sync", "fetch", "--repo", ".", "--remote", "origin", "--branch", "main"],
+            "sync_remote",
+        ),
+        (["tracking", "sync", "--prompt-key"], "_hidden_input"),
+        (["resources", "attach", "example"], "ResourceLibrary.build_iso"),
+        (
+            [
+                "sync",
+                "export-guest",
+                "--output",
+                "guest.bundle",
+                "/home/focusvm/test.bundle",
+            ],
+            "VMService.offline_disk",
+        ),
+    ],
+)
+def test_maintenance_cli_refuses_side_effects_during_focus(
+    session_paths: ConfigPaths,
+    arguments: list[str],
+    operation: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with (
+        patch("focusvm.cli.SessionService._load", return_value=object()),
+        patch(f"focusvm.cli.{operation}") as action,
+    ):
+        assert main(arguments) == 2
+    action.assert_not_called()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "End the focus session" in captured.err

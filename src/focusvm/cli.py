@@ -2,21 +2,32 @@
 
 import argparse
 import json
+import subprocess
 import sys
 import warnings
 from collections.abc import Sequence
 from dataclasses import asdict
 from getpass import GetPassWarning, getpass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 from uuid import UUID
 
 from . import __version__
 from .config import ConfigError, ConfigPaths, ConfigStore, Settings, VMDefaults
 from .diagnostics import diagnose
+from .git_sync import (
+    GitSyncError,
+    GitSyncInputError,
+    create_bundle,
+    import_bundle,
+    sync_remote,
+)
+from .guest_export import GuestExportError, export_bundle
 from .gui import GUIUnavailable, launch
 from .local_state import PrivateFileError
 from .provisioning import ImageInput, ProvisioningError, ProvisioningUnavailable
+from .resources import Resource, ResourceError, ResourceLibrary, ResourceUnavailable
 from .sessions import (
     DEFAULT_NETWORK,
     OFFLINE_NETWORKS,
@@ -26,6 +37,14 @@ from .sessions import (
     SessionError,
     SessionInputError,
     SessionService,
+)
+from .tracking import (
+    ActivityQueue,
+    TrackingError,
+    TrackingInputError,
+    forget_api_key,
+    read_api_key,
+    save_api_key,
 )
 from .viewer import ViewerError
 from .virtualization import VirtualizationError, VirtualizationUnavailable, VMStatus
@@ -51,6 +70,9 @@ class _Arguments(argparse.Namespace):
         "gui",
         "session",
         "profiles",
+        "resources",
+        "sync",
+        "tracking",
     ]
     session_command: Literal["start", "status", "reopen", "end"]
     storage_pool: str
@@ -67,6 +89,34 @@ class _Arguments(argparse.Namespace):
     timeout: int
     profile: str
     network: str
+    resource_action: Literal[
+        "add", "list", "search", "remove", "open", "build", "attach", "eject"
+    ]
+    sync_action: Literal["bundle", "import", "export-guest", "fetch", "push"]
+    tracking_action: Literal[
+        "enable",
+        "disable",
+        "status",
+        "record",
+        "clear",
+        "store-key",
+        "forget-key",
+        "sync",
+    ]
+    path: Path
+    output: Path
+    repo: Path
+    branch: str
+    remote: str
+    resource_id: str
+    resource_ids: list[str]
+    query: str
+    projects: list[str]
+    project: str
+    entity: str
+    timestamp: float | None
+    prompt_key: bool
+    guest_path: str
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -164,7 +214,104 @@ def _parser() -> argparse.ArgumentParser:
     _json_option(
         profile_commands.add_parser("list", help="List available focus profiles")
     )
+    _maintenance_parsers(
+        commands.add_parser("resources", help="Manage offline reference files"),
+        commands.add_parser("sync", help="Transfer Git commits"),
+        commands.add_parser("tracking", help="Manage opt-in WakaTime activity"),
+    )
     return parser
+
+
+def _maintenance_parsers(
+    resources: argparse.ArgumentParser,
+    sync: argparse.ArgumentParser,
+    tracking: argparse.ArgumentParser,
+) -> None:
+    resource_actions = resources.add_subparsers(dest="resource_action", required=True)
+    add = resource_actions.add_parser("add", help="Copy a local file into the library")
+    add.add_argument("path", type=Path)
+    _json_option(add)
+    _json_option(resource_actions.add_parser("list", help="List library files"))
+    search = resource_actions.add_parser("search", help="Find library files by name")
+    search.add_argument("query")
+    _json_option(search)
+    remove = resource_actions.add_parser("remove", help="Remove the library copy")
+    remove.add_argument("resource_id")
+    _json_option(remove)
+    resource_actions.add_parser(
+        "open", help="Open a reference on the host"
+    ).add_argument("resource_id")
+    build = resource_actions.add_parser("build", help="Write a read-only reference ISO")
+    build.add_argument("--output", type=Path, required=True)
+    build.add_argument("resource_ids", nargs="+")
+    attach = resource_actions.add_parser(
+        "attach", help="Attach selected references to a stopped VM"
+    )
+    attach.add_argument("resource_ids", nargs="+")
+    _vm_options(attach)
+    _vm_options(
+        resource_actions.add_parser("eject", help="Eject references from a stopped VM")
+    )
+
+    git_actions = sync.add_subparsers(dest="sync_action", required=True)
+    bundle = git_actions.add_parser(
+        "bundle", help="Export a branch as an offline Git bundle"
+    )
+    bundle.add_argument("--output", type=Path, required=True)
+    receive = git_actions.add_parser(
+        "import", help="Import a bundle into a separate Git ref"
+    )
+    receive.add_argument("path", type=Path)
+    guest_export = git_actions.add_parser(
+        "export-guest", help="Copy a bundle from a stopped VM"
+    )
+    guest_export.add_argument("guest_path")
+    guest_export.add_argument("--output", type=Path, required=True)
+    _vm_options(guest_export)
+    fetch = git_actions.add_parser(
+        "fetch", help="Fetch one branch into a separate Git ref"
+    )
+    push = git_actions.add_parser("push", help="Push one local branch without force")
+    for action in (bundle, receive, fetch, push):
+        action.add_argument("--repo", type=Path, required=True)
+        action.add_argument("--branch", required=True)
+    for action in (fetch, push):
+        action.add_argument("--remote", required=True)
+
+    activity_actions = tracking.add_subparsers(dest="tracking_action", required=True)
+    enable = activity_actions.add_parser(
+        "enable", help="Enable recording for named projects"
+    )
+    enable.add_argument("projects", nargs="+")
+    activity_actions.add_parser("disable", help="Disable recording and uploading")
+    activity_actions.add_parser("clear", help="Discard all queued local activity")
+    _json_option(
+        activity_actions.add_parser(
+            "status", help="Preview selected projects and queued files"
+        )
+    )
+    record = activity_actions.add_parser(
+        "record", help="Queue an explicit file heartbeat locally"
+    )
+    record.add_argument("--project", required=True)
+    record.add_argument(
+        "--file", dest="entity", required=True, help="Project-relative file path"
+    )
+    record.add_argument(
+        "--time", dest="timestamp", type=float, help="Unix timestamp (default: now)"
+    )
+    activity_actions.add_parser(
+        "store-key", help="Store an API key in the desktop keyring"
+    )
+    activity_actions.add_parser("forget-key", help="Remove the stored API key")
+    send = activity_actions.add_parser(
+        "sync", help="Send queued events for enabled projects to WakaTime"
+    )
+    send.add_argument(
+        "--prompt-key",
+        action="store_true",
+        help="Enter an API key for this upload only",
+    )
 
 
 def _json_option(parser: argparse.ArgumentParser) -> None:
@@ -195,13 +342,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         return _dispatch(args, ConfigPaths.from_environment())
-    except (ConfigError, VMInputError, ProvisioningError, SessionInputError) as error:
+    except (
+        ConfigError,
+        VMInputError,
+        ProvisioningError,
+        SessionInputError,
+        ResourceError,
+        GitSyncInputError,
+        TrackingInputError,
+    ) as error:
         print(f"focusvm: {error}", file=sys.stderr)
         return EXIT_INVALID_INPUT
     except (
         VirtualizationUnavailable,
         ProvisioningUnavailable,
         GUIUnavailable,
+        ResourceUnavailable,
     ) as error:
         print(f"focusvm: {error}", file=sys.stderr)
         return EXIT_UNAVAILABLE
@@ -212,6 +368,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         VMStateError,
         SessionError,
         ViewerError,
+        GitSyncError,
+        GuestExportError,
+        TrackingError,
+        subprocess.SubprocessError,
     ) as error:
         print(f"focusvm: {error}", file=sys.stderr)
         return EXIT_OPERATION_FAILED
@@ -271,6 +431,15 @@ def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
         )
 
     service = VMService(paths.state_dir, paths.cache_dir)
+    if args.command in ("resources", "sync", "tracking"):
+        sessions = SessionService(paths.state_dir, service)
+        if args.command == "resources":
+            return _dispatch_resources(
+                args, ResourceLibrary(paths.data_dir), store, service, sessions
+            )
+        if args.command == "sync":
+            return _dispatch_git(args, sessions, service, store)
+        return _dispatch_tracking(args, ActivityQueue(paths.state_dir), sessions)
     if args.command == "session":
         return _dispatch_session(args, store, SessionService(paths.state_dir, service))
     if args.command == "list":
@@ -327,6 +496,135 @@ def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
 
     _print_status(status, json_output=args.json)
     return 0
+
+
+def _dispatch_resources(
+    args: _Arguments,
+    library: ResourceLibrary,
+    store: ConfigStore,
+    service: VMService,
+    sessions: SessionService,
+) -> int:
+    action = args.resource_action
+    if action == "add":
+        _print_resources((library.add(args.path),), json_output=args.json)
+    elif action == "list":
+        _print_resources(library.list(), json_output=args.json)
+    elif action == "search":
+        _print_resources(library.search(args.query), json_output=args.json)
+    elif action == "remove":
+        _print_resources((library.remove(args.resource_id),), json_output=args.json)
+    elif action == "open":
+        executable, options = library.open_command(args.resource_id)
+        subprocess.Popen(  # noqa: S603 - Selected local document viewer.
+            [executable, *options], stdin=subprocess.DEVNULL, start_new_session=True
+        )
+    elif action == "build":
+        print(library.build_iso(args.resource_ids, args.output))
+    else:
+        target = _target_vm(args.vm, store)
+        with sessions.outside_session():
+            if action == "attach":
+                with TemporaryDirectory(prefix="focusvm-references-") as directory:
+                    iso = library.build_iso(
+                        args.resource_ids, Path(directory) / "references.iso"
+                    )
+                    status = service.attach_resources(target, iso)
+            else:
+                status = service.eject_resources(target)
+        _print_status(status, json_output=args.json)
+    return 0
+
+
+def _print_resources(resources: Sequence[Resource], *, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps([asdict(resource) for resource in resources], default=str))
+    elif resources:
+        for resource in resources:
+            print(
+                f"{resource.id}  {resource.kind}  {resource.name}  ({resource.size_bytes:,} bytes)"
+            )
+    else:
+        print("No matching library files.")
+
+
+def _dispatch_git(
+    args: _Arguments, sessions: SessionService, service: VMService, store: ConfigStore
+) -> int:
+    direction = args.sync_action
+    if direction == "bundle":
+        create_bundle(args.repo, args.branch, args.output)
+        print(args.output)
+    elif direction == "import":
+        print(import_bundle(args.repo, args.path, args.branch))
+    elif direction == "export-guest":
+        with (
+            sessions.outside_session(),
+            service.offline_disk(_target_vm(args.vm, store)) as disk,
+        ):
+            output = export_bundle(disk, args.guest_path, args.output)
+        print(json.dumps({"path": str(output)}) if args.json else output)
+    else:
+        with sessions.outside_session():
+            print(sync_remote(args.repo, args.remote, args.branch, direction))
+    return 0
+
+
+def _dispatch_tracking(
+    args: _Arguments, queue: ActivityQueue, sessions: SessionService
+) -> int:
+    action = args.tracking_action
+    if action == "enable":
+        activity = queue.enable(args.projects)
+        print(f"Activity enabled for {', '.join(activity.projects)}.")
+    elif action == "disable":
+        queue.disable()
+        print("Activity disabled. Existing events remain queued.")
+    elif action == "status":
+        activity = queue.status()
+        if args.json:
+            print(json.dumps(asdict(activity)))
+        else:
+            print(f"Enabled projects: {', '.join(activity.projects) or 'none'}")
+            for heartbeat in activity.queued:
+                print(f"{heartbeat.time:g}  {heartbeat.project}  {heartbeat.entity}")
+            print(f"Queued events: {len(activity.queued)}")
+    elif action == "record":
+        queue.record(args.project, args.entity, args.timestamp)
+        print("Activity queued locally.")
+    elif action == "clear":
+        queue.clear()
+        print("Queued activity discarded.")
+    elif action == "store-key":
+        save_api_key(_hidden_input("WakaTime API key: "))
+        print("Key stored in the desktop keyring.")
+    elif action == "forget-key":
+        forget_api_key()
+        print("Stored key removed.")
+    else:
+        with sessions.outside_session():
+            activity = queue.status()
+            if not any(event.project in activity.projects for event in activity.queued):
+                print("No queued activity for enabled projects.")
+            else:
+                key = (
+                    _hidden_input("WakaTime API key: ")
+                    if args.prompt_key
+                    else read_api_key()
+                )
+                print(f"Sent {queue.sync(key)} queued events to WakaTime.")
+    return 0
+
+
+def _hidden_input(prompt: str) -> str:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", GetPassWarning)
+            return getpass(prompt)
+    except (EOFError, GetPassWarning) as error:
+        raise TrackingInputError(
+            "Run this command in a terminal to enter the API key securely"
+        ) from error
 
 
 def _dispatch_session(
@@ -433,4 +731,7 @@ def _print_status(status: VMStatus, *, json_output: bool) -> None:
     print(f"CPU: {status.cpus} vCPUs. Memory: {status.memory_mib:,} MiB.")
     print(
         f"Disk: {status.disk_capacity_bytes:,} bytes virtual, {status.disk_allocation_bytes:,} bytes allocated."
+    )
+    print(
+        f"Reference disc: {'attached' if status.resource_media_attached else 'empty'}."
     )
