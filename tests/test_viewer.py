@@ -53,6 +53,11 @@ def test_focus_requires_local_display_and_native_viewer(
     with pytest.raises(VirtualizationUnavailable, match="local Wayland or X11"):
         viewer.check_focus_viewer(VM_ID)
     monkeypatch.setenv("DISPLAY", ":10.0")
+
+    def x11_socket(path: Path) -> bool:
+        return path == viewer._X11_SOCKETS / "X10"
+
+    monkeypatch.setattr(Path, "is_socket", x11_socket)
     assert viewer.check_focus_viewer(VM_ID)[1] == FOCUS
 
     executable.unlink()

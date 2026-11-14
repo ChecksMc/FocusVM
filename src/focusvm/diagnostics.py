@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .config import ConfigPaths
-from .virtualization import VirtualizationError, connect
+from .config import ConfigError, ConfigPaths, ConfigStore
+from .local_state import PrivateFileError, check_private_directory
+from .viewer import check_viewer_prerequisites, local_display_backend
+from .virtualization import VirtualizationError, VirtualizationUnavailable, connect
 
 type DiagnosticStatus = Literal["ok", "warning", "error"]
 
@@ -36,6 +38,7 @@ def diagnose(paths: ConfigPaths, storage_pool: str | None) -> list[Diagnostic]:
         _check_directory("config_directory", paths.config_dir),
         _check_directory("state_directory", paths.state_dir),
         _check_directory("cache_directory", paths.cache_dir),
+        _check_directory("data_directory", paths.data_dir),
     ]
     checks.extend(_check_libvirt(storage_pool))
     for command in ("qemu-img", "gpgv", "openssl", "xorriso"):
@@ -44,6 +47,7 @@ def diagnose(paths: ConfigPaths, storage_pool: str | None) -> list[Diagnostic]:
         (
             _check_command("virt-viewer", required=False),
             _check_desktop(),
+            _check_focus_viewer(),
             Diagnostic(
                 "guest_image",
                 "warning",
@@ -52,6 +56,25 @@ def diagnose(paths: ConfigPaths, storage_pool: str | None) -> list[Diagnostic]:
         )
     )
     return checks
+
+
+def diagnose_configured(paths: ConfigPaths) -> list[Diagnostic]:
+    """Report configuration errors alongside the remaining independent checks."""
+    store = ConfigStore(paths.config_file)
+    try:
+        settings = store.load()
+    except FileNotFoundError:
+        configuration = Diagnostic(
+            "configuration", "warning", f"Settings have not been saved to {store.path}."
+        )
+    except (ConfigError, OSError) as error:
+        configuration = Diagnostic("configuration", "error", f"{store.path}: {error}")
+    else:
+        return [
+            Diagnostic("configuration", "ok", f"Read settings from {store.path}."),
+            *diagnose(paths, settings.application.storage_pool),
+        ]
+    return [configuration, *diagnose(paths, None)]
 
 
 def _check_kvm_device(path: Path) -> Diagnostic:
@@ -93,12 +116,11 @@ def _check_directory(name: str, path: Path) -> Diagnostic:
             return Diagnostic(name, "error", f"Cannot follow {directory}: {error}")
     if not stat.S_ISDIR(entry.st_mode):
         return Diagnostic(name, "error", f"Expected a directory at {directory}.")
-    if directory == path and (entry.st_uid != os.getuid() or entry.st_mode & 0o022):
-        return Diagnostic(
-            name,
-            "error",
-            f"{path} must be owned by you and protected from other writers.",
-        )
+    if directory == path:
+        try:
+            check_private_directory(path)
+        except (OSError, PrivateFileError) as error:
+            return Diagnostic(name, "error", str(error))
     if not os.access(directory, os.W_OK | os.X_OK):
         return Diagnostic(name, "error", f"Cannot write to {directory}.")
     if directory != path:
@@ -171,10 +193,28 @@ def _check_command(name: str, *, required: bool) -> Diagnostic:
 def _check_desktop() -> Diagnostic:
     session = os.environ.get("XDG_SESSION_TYPE", "unknown")
     desktop = os.environ.get("XDG_CURRENT_DESKTOP", "unknown")
+    if backend := local_display_backend():
+        return Diagnostic(
+            "desktop", "ok", f"Local {backend} display ({session} session, {desktop})."
+        )
     if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"):
         return Diagnostic(
-            "desktop", "ok", f"Display configured ({session}, {desktop})."
+            "desktop",
+            "warning",
+            "No usable local display. Check the Wayland socket or open a local desktop terminal.",
         )
     return Diagnostic(
         "desktop", "warning", "No graphical display is configured in this terminal."
+    )
+
+
+def _check_focus_viewer() -> Diagnostic:
+    try:
+        check_viewer_prerequisites()
+    except VirtualizationUnavailable as error:
+        return Diagnostic("focus_viewer", "warning", str(error))
+    return Diagnostic(
+        "focus_viewer",
+        "ok",
+        "Viewer, local display, and Linux process controls are available.",
     )

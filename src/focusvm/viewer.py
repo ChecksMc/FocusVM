@@ -12,7 +12,7 @@ from pathlib import Path
 from threading import Thread
 from uuid import UUID
 
-from .local_state import PrivateFileError, open_owned_file
+from .local_state import PrivateFileError, open_private_file
 from .virtualization import URI, VirtualizationUnavailable
 
 _VIEWER = "virt-viewer"
@@ -22,6 +22,7 @@ _HOTKEYS = "toggle-fullscreen=shift+f11,release-cursor=shift+f12"
 _FOCUS_ARGS = ("--full-screen", "--hotkeys", _HOTKEYS)
 _FOCUS_ARGV = tuple(os.fsencode(argument) for argument in (*_FOCUS_ARGS, *_ATTACH_ARGS))
 _PROC = Path("/proc")
+_X11_SOCKETS = Path("/tmp/.X11-unix")  # noqa: S108 - Standard X11 socket location, inspected only.
 _STARTUP_SECONDS = 0.5
 _CLOSE_MILLISECONDS = 3000
 
@@ -31,15 +32,17 @@ class ViewerError(RuntimeError):
 
 
 def console_command(vm: UUID) -> tuple[str, list[str]]:
-    executable = shutil.which(_VIEWER)
-    if executable is None:
-        raise VirtualizationUnavailable("Install virt-viewer to open the VM console")
-    return executable, [*_ATTACH_ARGS, str(vm)]
+    return _viewer_executable(), [*_ATTACH_ARGS, str(vm)]
 
 
 def check_focus_viewer(vm: UUID) -> tuple[str, list[str]]:
     """Check prerequisites and build the fullscreen-only console command."""
-    executable, arguments = console_command(vm)
+    executable = check_viewer_prerequisites()
+    return executable, [*_FOCUS_ARGS, *_ATTACH_ARGS, str(vm)]
+
+
+def check_viewer_prerequisites() -> str:
+    executable = _viewer_executable()
     try:
         if Path(executable).resolve(strict=True).name != _VIEWER:
             raise VirtualizationUnavailable(
@@ -49,7 +52,7 @@ def check_focus_viewer(vm: UUID) -> tuple[str, list[str]]:
         raise VirtualizationUnavailable(
             "Could not resolve the virt-viewer executable"
         ) from error
-    if not _local_display():
+    if local_display_backend() is None:
         raise VirtualizationUnavailable(
             "Start the focus session from a local Wayland or X11 desktop"
         )
@@ -63,7 +66,14 @@ def check_focus_viewer(vm: UUID) -> tuple[str, list[str]]:
         raise VirtualizationUnavailable(
             "This environment cannot safely manage a detached focus viewer (pidfd unavailable)"
         ) from error
-    return executable, [*_FOCUS_ARGS, *arguments]
+    return executable
+
+
+def _viewer_executable() -> str:
+    executable = shutil.which(_VIEWER)
+    if executable is None:
+        raise VirtualizationUnavailable("Install virt-viewer to open the VM console")
+    return executable
 
 
 def launch_focus_viewer(command: tuple[str, list[str]], token: UUID, log: Path) -> None:
@@ -81,9 +91,7 @@ def launch_detached(
     executable, arguments = command
     env = os.environ if environment is None else environment
     try:
-        with open(log, "ab", opener=open_owned_file) as output:
-            if os.fstat(output.fileno()).st_nlink != 1:
-                raise ViewerError(f"Viewer log cannot be a hard link: {log}")
+        with open(log, "ab", opener=open_private_file) as output:
             os.fchmod(output.fileno(), 0o600)
             output.truncate(0)
             output.write(f"Launching the FocusVM {label}.\n".encode())
@@ -153,11 +161,17 @@ def close_process(
             raise ViewerError(f"The {label} did not exit. Close its window manually.")
 
 
-def _local_display() -> bool:
+def local_display_backend() -> str | None:
     if wayland_display() is not None:
-        return True
-    display = os.environ.get("DISPLAY", "")
-    return re.fullmatch(r"(?:unix)?:[0-9]+(?:\.[0-9]+)?", display) is not None
+        return "Wayland"
+    display = re.fullmatch(
+        r"(?:unix)?:([0-9]+)(?:\.[0-9]+)?", os.environ.get("DISPLAY", "")
+    )
+    if display is not None:
+        with suppress(OSError):
+            if (_X11_SOCKETS / f"X{display[1]}").is_socket():
+                return "X11"
+    return None
 
 
 def wayland_display() -> Path | None:

@@ -16,7 +16,7 @@ from uuid import UUID
 
 from . import __version__
 from .config import ConfigError, ConfigPaths, ConfigStore, Settings, VMDefaults
-from .diagnostics import diagnose
+from .diagnostics import diagnose_configured
 from .git_sync import (
     GitSyncError,
     GitSyncInputError,
@@ -505,10 +505,7 @@ def _dispatch(args: _Arguments, paths: ConfigPaths) -> int:
         return 0
 
     if args.command == "doctor":
-        settings = _load_config(store)
-        diagnostics = diagnose(
-            paths, settings.application.storage_pool if settings else None
-        )
+        diagnostics = diagnose_configured(paths)
         if args.json:
             print(json.dumps([asdict(item) for item in diagnostics]))
         else:

@@ -101,11 +101,11 @@ def test_doctor_json_reports_missing_prerequisites(
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     with patch(
-        "focusvm.cli.diagnose",
+        "focusvm.cli.diagnose_configured",
         return_value=[Diagnostic("libvirt", "error", "Unavailable")],
     ) as diagnose:
         assert main(["doctor", "--json"]) == 3
-    assert diagnose.call_args.args[1] is None
+    assert diagnose.call_args.args[0].config_dir == tmp_path / "focusvm"
     assert json.loads(capsys.readouterr().out) == [
         {"name": "libvirt", "status": "error", "detail": "Unavailable"}
     ]
