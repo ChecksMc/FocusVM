@@ -16,6 +16,11 @@ src/focusvm/
   virtualization.py  Libvirt connection, domain definitions, and storage
   provisioning.py    Image verification and per-VM preparation
   sessions.py        Session transitions, offline policy, and recovery
+  profiles.py        Built-in session presets
+  cage.py            Optional nested Wayland compositor and viewer recovery
+  journal.py         Private session notes and recording totals
+  packages.py        Validation and export of selected offline wheels
+  research.py        Host allowlist and approved HTTPS reference retrieval
   resources.py       Local reference library and read-only disc images
   git_sync.py        Explicit Git bundle and host remote operations
   guest_export.py    Read-only bundle extraction from a stopped guest
@@ -37,6 +42,7 @@ The same Qt widgets and viewer launcher serve both Fedora desktop targets. Detec
 | Location | Contents |
 | --- | --- |
 | `$XDG_CONFIG_HOME/focusvm/config.toml` | Settings, defaults, and selected libvirt storage pool |
+| `$XDG_CONFIG_HOME/focusvm/research-hosts.json` | Approved public hostnames for reference retrieval |
 | `$XDG_CONFIG_HOME/focusvm/profiles/` | User-owned profile TOML files when custom profiles ship |
 | `$XDG_STATE_HOME/focusvm/` | Local VM inventory, operation and session state, logs, and queued activity |
 | `$XDG_CACHE_HOME/focusvm/` | Replaceable downloads and staging data |
@@ -45,7 +51,7 @@ The same Qt widgets and viewer launcher serve both Fedora desktop targets. Detec
 
 Use XDG defaults for unset paths. Keep settings and state files private to the user and cache files disposable. Store connection credentials for optional integrations in a supported system credential store. If one is unavailable, the integration can prompt for a credential for that operation or stay disabled. [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/)
 
-Schema version 1 requires the `application` and `vm_defaults` tables and an `application.storage_pool` name. The remaining preferences use the defaults below. `default_vm` is an optional libvirt domain UUID and `deep-work` is the currently accepted profile ID. `init` checks the pool name's format. `doctor` and `create` check the actual pool in libvirt.
+Schema version 1 requires the `application` and `vm_defaults` tables and an `application.storage_pool` name. The remaining preferences use the defaults below. `default_vm` is an optional libvirt domain UUID. `default_profile` accepts `deep-work`, `contest`, or `research`. `init` checks the pool name's format. `doctor` and `create` check the actual pool in libvirt.
 
 ```toml
 schema_version = 1
@@ -90,9 +96,12 @@ The resource service copies selected files into a private library and builds a r
 | `focusvm session start --profile deep-work` | Available | Validate the profile, start or adopt the offline guest, and open the fullscreen viewer |
 | `focusvm session status`, `focusvm session reopen` | Available | Inspect the recorded session or reopen a disconnected viewer |
 | `focusvm session end` | Available | End the session and close its viewer |
-| `focusvm profiles list` | Available | List the built-in Deep Work profile |
+| `focusvm profiles list` | Available | List built-in profiles and their default network policies |
 | `focusvm resources` | Available | Manage the library and build, attach, or eject a reference disc |
 | `focusvm sync` | Available | Exchange Git bundles or explicitly fetch or push one branch from the host |
 | `focusvm tracking` | Optional | Manage the local activity queue, credentials, and WakaTime upload |
+| `focusvm research` | Available | Configure approved hostnames and save public HTTPS references on the host |
+| `focusvm packages` | Available | Build and attach a read-only disc of selected local Python wheels |
+| `focusvm journal` | Optional | Write, list, remove, and summarize local session entries |
 
 Resolve the explicit VM selection or configured default to a managed UUID. Provide plain-text errors on stderr and stable JSON output for status and diagnostics. Reserve exit codes for success, invalid input, unavailable prerequisites, and operation failure. Optional integration commands appear when their workflows are implemented.

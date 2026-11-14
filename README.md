@@ -46,6 +46,8 @@ focusvm session end
 
 Import PDF, HTML, Markdown, and ZIM files in the manager’s **Resources** page. The CLI can attach a read-only reference disc, transfer Git bundles, and queue opt-in WakaTime events. [Offline resources and synchronization](docs/resources-and-sync.md)
 
+Use Contest for an optional timer or Research for a session with local references. The CLI can save approved web references before a session, attach offline Python wheels, and record journal entries with optional statistics. [Advanced sessions and maintenance](docs/advanced-sessions.md)
+
 ## Design and setup
 
 - [Architecture and configuration](docs/architecture.md) covers the package structure, service boundaries, state ownership, and CLI.

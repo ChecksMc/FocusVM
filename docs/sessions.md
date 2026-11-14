@@ -1,21 +1,21 @@
 # Focus sessions, profiles, and networking
 
-Deep Work and the two offline network policies are available in the CLI and desktop manager. See [Architecture](architecture.md) for state ownership and [Setup](setup.md) for the host and guest prerequisites.
+Deep Work, Contest, Research, and the two offline network policies are available in the CLI and desktop manager. See [Architecture](architecture.md) for state ownership and [Setup](setup.md) for the host and guest prerequisites.
 
 ## Profiles
 
-The first usable build targets **Deep Work**. It opens the guest fullscreen with a C++ and Python toolchain, Vim, Git, GDB, and local manual pages. It defaults to Balanced networking, disabled clipboard and file transfer, and an open-ended session.
+**Deep Work** opens the guest fullscreen with a C++ and Python toolchain, Vim, Git, GDB, and local manual pages. It defaults to Balanced networking, disabled clipboard and file transfer, and an open-ended session.
 
-**Contest** follows with local problem statements, compiler and test access, and Strict networking. Its optional timer alerts the user without stopping the VM. **Research** adds local PDF and ZIM collections, notes, and the optional scientific Python preset. Research begins with Balanced networking and gains approved online references when the network policy supports them.
+**Contest** defaults to Strict networking. Attach local problem statements and choose an optional countdown that leaves the VM running at zero. **Research** defaults to Balanced and uses the same guest tools with any attached PDFs, notes, or ZIM archives. Approved online references are downloaded on the host before the session. [Advanced sessions and maintenance](advanced-sessions.md)
 
-Built-in profiles have stable IDs and can be duplicated for customization. Custom profiles will be stored as versioned TOML and managed through the same validation rules in the CLI and desktop manager. A profile selects the network policy, display and clipboard preferences, an optional timer, and a list of resource collection IDs. Guest tool presets are provisioning inputs. Starting a session checks that its requested capabilities and collections are available. A session records its effective profile so later edits take effect on the next start. Imports validate the schema and referenced collections before saving. Profile exports contain settings and collection IDs only.
+Built-in profile IDs are `deep-work`, `contest`, and `research`. The session record stores the effective profile, network policy, timer, and viewer choice. Profile editing, imported custom profiles, and per-profile resource collections are planned.
 
 ## Offline networking
 
-| Policy | Current behavior | Planned extensions |
+| Policy | Guest networking | Host operations |
 | --- | --- | --- |
 | Strict | The guest has no virtual network interface. Local tools, Git, and resources remain usable. | Package installs use preloaded artifacts. Remote synchronization waits for an explicit action outside the session. |
-| Balanced (default) | The same offline guest configuration as Strict. | Explicit Git, WakaTime, and package operations outside the session. Optional approved research access requires an implemented policy. |
+| Balanced (default) | The same offline guest configuration as Strict. | Explicit Git, WakaTime, package, and approved research operations on the host outside the session. |
 | Flexible | Unavailable. Selecting it returns a capability error. | Access to configured destinations through a dedicated, tested guest egress policy. |
 
 The baseline managed domain has no virtual network interfaces, network-capable passthrough devices, or USB redirection. The first build needs no app-created libvirt network or host firewall rules. Validate the saved libvirt definition before starting the guest and check its live configuration before presenting the session as offline. For a guest that is already running, require both definitions to match the requested controls before opening its console. Reject an unexpected device or a managed-save image that could restore stale devices. Configuration and libvirt errors surface in both interfaces. [Libvirt domain XML](https://libvirt.org/formatdomain.html), [libvirt domain state API](https://libvirt.org/html/libvirt-libvirt-domain.html#virDomainHasManagedSaveImage).
@@ -35,12 +35,12 @@ The GUI and CLI use the same session service, with one focus session at a time p
 
 The viewer runs independently of the CLI or manager that launched it. The session record and process identity let a later invocation recover it. FocusVM uses Linux pidfds for safe process signaling. [Python pidfd API](https://docs.python.org/3.12/library/os.html#os.pidfd_open)
 
-Ordinary fullscreen uses the viewer's regular quit controls. Advanced kiosk integration with Cage or a dedicated Wayland session is a later option contingent on a tested emergency exit and safe recovery after viewer or compositor failure.
+Ordinary fullscreen uses the viewer's regular quit controls. On a local Wayland desktop, the optional Cage viewer runs in a nested host window and can be ended from the manager or a separate host terminal. [Optional Cage viewer](advanced-sessions.md#optional-cage-viewer)
 
 ## Work outside a session
 
 Git commits, branches, diffs, and history work inside the offline guest. Use bundles to transfer commits and run host-side fetch or push after ending the session. [Git transfer and synchronization](resources-and-sync.md#git)
 
-For dependencies, build or fetch wheels and other artifacts in a separate maintenance step, then install from local media in the guest. Python packages go in a project virtual environment. Any future networked maintenance mode requires an explicit start outside a focus session and an offline configuration check before the next session.
+For dependencies, attach an offline wheel disc outside a focus session, then install those wheels into a project virtual environment. Research references can be retrieved from approved sites on the host and attached the same way. [Advanced sessions and maintenance](advanced-sessions.md)
 
-WakaTime activity is opt-in and can be queued locally. It uploads only when requested after the session ends. The local session journal is planned. [WakaTime activity](resources-and-sync.md#wakatime-activity)
+WakaTime activity is opt-in and can be queued locally. It uploads only when requested after the session ends. The local journal records sessions you add manually. [WakaTime activity](resources-and-sync.md#wakatime-activity) · [Journal and statistics](advanced-sessions.md#journal-and-statistics)
