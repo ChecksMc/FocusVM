@@ -69,7 +69,7 @@ focusvm init --storage-pool focusvm
 focusvm doctor
 ```
 
-Use the actual name of your active directory pool in `init`. `doctor --json` returns structured checks. Its queries require the ordinary system libvirt connection because libvirt restricts the capability query on read-only connections. If authorization fails, check your existing host policy with the administrator. [Libvirt client authorization](https://libvirt.org/acl.html)
+Use the actual name of your active directory pool in `init`. `doctor --json` reports malformed settings alongside the other checks. It checks the local display socket, viewer process controls, and the configuration, state, cache, and data directories. Its queries require the ordinary system libvirt connection because libvirt restricts the capability query on read-only connections. If authorization fails, check your existing host policy with the administrator. [Libvirt client authorization](https://libvirt.org/acl.html)
 
 Supply a compatible QCOW2, its JSON manifest and detached signature, and a binary keyring containing a publisher key you trust. The [guest builder](guest.md#build-the-base-image) can produce these image files with your signing key. The repository has no published guest image or signing key yet.
 

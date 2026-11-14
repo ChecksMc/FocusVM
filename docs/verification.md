@@ -27,6 +27,7 @@ Run the development checks in CI on the minimum supported Python version. Includ
 5. **Focus sessions.** Start and end a session through each frontend. On each reference desktop, open the guest in fullscreen through the SPICE viewer and use the documented exit controls. Close the viewer and check that another invocation reports a disconnected session, then reopen it. Confirm that ending closes only the session viewer and leaves the guest running offline. Record keyboard capture and compositor-reserved shortcuts for that desktop. Verify the default isolation of the clipboard, file transfer, host shares and device forwarding. Confirm that Strict and Balanced boot without a guest network interface. Validate that a request for Flexible fails explicitly while it is unavailable. [Session behavior](sessions.md)
 6. **Documentation and synchronization.** Import and find a PDF and a ZIM file, attach them to a stopped VM, and boot without a NIC. Check that the disc and seed are read-only, open the PDF, look up a C++ standard library entry, and read a ZIM through the guest's loopback server. Shut down and eject the reference disc. Transfer a disposable Git branch in both directions, check separate review refs, and verify a divergent push cannot overwrite history. Test guest extraction with `guestfish` when installed. Verify that WakaTime recording is opt-in, upload is unavailable during focus sessions, and unconfirmed events stay queued. Use a test account for live keyring and upload checks. [Offline resources and synchronization](resources-and-sync.md)
 7. **Advanced sessions.** Verify Contest and Research use the offline guest, and that restarting the viewer preserves the timer and leaves the VM running at zero. Test the research allowlist with an approved host, a redirect, and a nonpublic DNS answer. Attach trusted wheels and install them offline in a new project virtual environment. Verify Cage startup, viewer exit, independent session end, and reopen on Wayland. Confirm that journal statistics reflect only the entries added by the user. [Advanced sessions and maintenance](advanced-sessions.md)
+8. **Production hardening.** Check recovery from interrupted VM creation, rejected device and disk configurations, failed viewer startup, and a timed-out shutdown. Hold background status checks in progress while using the desktop controls. Check that malformed configuration still produces a full diagnostic report and that shared or linked private state is rejected. Run the core viewer and recovery flow on both Fedora reference desktops.
 
 ## Reference-host checks
 
@@ -43,6 +44,17 @@ Inspect the same domain UUID in the GUI, CLI and libvirt. Check the domain type 
 | Application is interrupted during session startup or shutdown | On the next invocation, compare recorded state with libvirt before issuing changes. Confirm the visible state matches the domain, and repeat the operation safely. |
 | Guest does not respond to graceful shutdown | The frontend reports the timeout and continued VM state. A force-stop requires a separate deliberate action. |
 | Removal is cancelled or an unexpected storage path is encountered | The VM and its storage survive. Verify that confirmed removal affects only the intended application-owned resources. |
+
+### Phase 8 development checks
+
+The Qt manager and CLI completed Strict and Balanced session checks using disposable KVM guests on Fedora 44 x86-64. The checks used Python 3.14.10, libvirt 12.0.0, QEMU 10.2.2, Qt for Python 6.11.2, and virt-viewer 11.0. Both runs checked the viewer's Wayland fullscreen request, the live VM's device isolation and SPICE sharing settings, detection and recovery after viewer closure, session end, and separate guest shutdown.
+
+| Display environment | Result |
+| --- | --- |
+| KDE Plasma 6.8.2 in the host Wayland session | Manager and CLI session and recovery checks passed. |
+| GNOME Shell 50.6 and Mutter 50.6 on an isolated virtual Wayland monitor | The same manager and CLI checks passed. A Fedora Workstation login and physical keyboard shortcut checks are still pending. |
+
+The desktop smoke checks used a small disposable boot image. The Fedora development image is exercised separately with its offline development and resource checks.
 
 ## Release record
 
