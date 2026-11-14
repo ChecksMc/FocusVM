@@ -4,12 +4,13 @@ import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from .local_state import atomic_write, file_lock, open_owned_file
+from .profiles import PROFILES, ProfileId
 from .viewer import (
     ViewerError,
     check_focus_viewer,
@@ -20,10 +21,11 @@ from .viewer import (
 from .virtualization import VirtualizationError, VirtualizationUnavailable
 from .vm import VMInputError, VMService, VMStateError
 
-PROFILE_ID = "deep-work"
-PROFILE_NAME = "Deep Work"
-DEFAULT_NETWORK = "balanced"
+PROFILE_ID: Literal["deep-work"] = "deep-work"
+PROFILE_NAME = PROFILES[PROFILE_ID].name
+DEFAULT_NETWORK = PROFILES[PROFILE_ID].network
 OFFLINE_NETWORKS = ("balanced", "strict")
+MAX_CONTEST_MINUTES = 24 * 60
 
 type SessionState = Literal["active", "disconnected", "unresolved"]
 
@@ -45,6 +47,14 @@ class FocusSession:
     state: SessionState
     started_at: str
     detail: str | None = None
+    deadline: str | None = None
+    cage: bool = False
+
+    def remaining_seconds(self) -> int | None:
+        if self.deadline is None:
+            return None
+        remaining = datetime.fromisoformat(self.deadline) - datetime.now(UTC)
+        return max(0, -(-remaining // timedelta(seconds=1)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,16 +64,27 @@ class _Intent:
     vm_name: str
     network: str
     started_at: str
+    profile: ProfileId = PROFILE_ID
+    duration_minutes: int | None = None
+    cage: bool = False
 
     def view(self, state: SessionState, detail: str | None = None) -> FocusSession:
+        deadline = None
+        if self.duration_minutes is not None:
+            deadline = (
+                datetime.fromisoformat(self.started_at)
+                + timedelta(minutes=self.duration_minutes)
+            ).isoformat()
         return FocusSession(
             self.vm,
             self.vm_name,
-            PROFILE_ID,
+            self.profile,
             self.network,
             state,
             self.started_at,
             detail,
+            deadline,
+            self.cage,
         )
 
 
@@ -77,12 +98,14 @@ class SessionService:
         self,
         target: UUID | None,
         profile: str = PROFILE_ID,
-        network: str = DEFAULT_NETWORK,
+        network: str | None = None,
+        *,
+        duration_minutes: int | None = None,
+        cage: bool = False,
     ) -> FocusSession:
-        if profile != PROFILE_ID:
-            raise SessionInputError(
-                f"Unknown focus profile {profile!r}. Use {PROFILE_ID}."
-            )
+        selected = _profile(profile)
+        network = PROFILES[selected].network if network is None else network
+        _contest_duration(selected, duration_minutes)
         if network == "flexible":
             raise VirtualizationUnavailable(
                 "Flexible networking is not available for focus sessions"
@@ -96,9 +119,16 @@ class SessionService:
                     "A focus session already exists. Reopen or end it first."
                 )
             vm = self.vm_service.focus_status(target)
-            command = check_focus_viewer(vm.uuid)
+            command = self._viewer_command(vm.uuid, cage)
             intent = _Intent(
-                uuid4(), vm.uuid, vm.name, network, datetime.now(UTC).isoformat()
+                uuid4(),
+                vm.uuid,
+                vm.name,
+                network,
+                datetime.now(UTC).isoformat(),
+                selected,
+                duration_minutes,
+                cage,
             )
             self._save(intent)
             return self._launch(intent, command)
@@ -115,8 +145,8 @@ class SessionService:
                 raise SessionError(
                     current.detail or "The focus session could not be verified"
                 )
-            command = check_focus_viewer(intent.vm)
-            close_focus_viewer(intent.token)
+            command = self._viewer_command(intent.vm, intent.cage)
+            self._close_viewer(intent)
             return self._launch(intent, command)
 
     def status(self) -> FocusSession | None:
@@ -129,7 +159,7 @@ class SessionService:
             intent = self._load()
             if intent is None:
                 return
-            close_focus_viewer(intent.token)
+            self._close_viewer(intent)
             self._save(None)
 
     @contextmanager
@@ -147,12 +177,22 @@ class SessionService:
         # resuming the guest. Recheck the live console before creating a host viewer.
         self.vm_service.start(intent.vm)
         self.vm_service.check_console(intent.vm)
-        launch_focus_viewer(command, intent.token, self.log)
+        if intent.cage:
+            from .cage import launch_cage_viewer
+
+            launch_cage_viewer(command, intent.token, self.log)
+        else:
+            launch_focus_viewer(command, intent.token, self.log)
         return intent.view("active")
 
     def _snapshot(self, intent: _Intent) -> FocusSession:
         try:
-            viewer_open = focus_viewer_running(intent.token)
+            if intent.cage:
+                from .cage import cage_running
+
+                viewer_open = cage_running(intent.token)
+            else:
+                viewer_open = focus_viewer_running(intent.token)
             vm = self.vm_service.focus_status(intent.vm)
         except (
             OSError,
@@ -179,6 +219,21 @@ class SessionService:
         record = None if intent is None else {"version": 1, **asdict(intent)}
         atomic_write(self.path, json.dumps(record, default=str) + "\n")
 
+    def _viewer_command(self, vm: UUID, cage: bool) -> tuple[str, list[str]]:
+        if cage:
+            from .cage import check_cage_viewer
+
+            return check_cage_viewer(vm)
+        return check_focus_viewer(vm)
+
+    def _close_viewer(self, intent: _Intent) -> None:
+        if intent.cage:
+            from .cage import close_cage
+
+            close_cage(intent.token)
+        else:
+            close_focus_viewer(intent.token)
+
     def _load(self) -> _Intent | None:
         try:
             with open(self.path, encoding="utf-8", opener=open_owned_file) as stream:
@@ -199,10 +254,27 @@ class SessionService:
                 or datetime.fromisoformat(started).utcoffset() is None
             ):
                 raise ValueError("Invalid focus-session network or start time")
-            return _Intent(UUID(token), UUID(vm), vm_name, network, started)
+            profile = _profile(data.get("profile", PROFILE_ID))
+            duration = _contest_duration(profile, data.get("duration_minutes"))
+            cage = data.get("cage", False)
+            if not isinstance(cage, bool):
+                raise ValueError("Invalid focus-session viewer mode")
+            intent = _Intent(
+                UUID(token),
+                UUID(vm),
+                vm_name,
+                network,
+                started,
+                profile,
+                duration,
+                cage,
+            )
+            if duration is not None:
+                intent.view("disconnected")
+            return intent
         except FileNotFoundError:
             return None
-        except ValueError as error:
+        except (ValueError, OverflowError) as error:
             raise SessionError(
                 f"Could not read focus session {self.path}: {error}"
             ) from error
@@ -212,4 +284,25 @@ def _field(record: dict[str, object], field: str) -> str:
     value = record.get(field)
     if not isinstance(value, str) or not value:
         raise ValueError(f"Invalid focus-session field {field}")
+    return value
+
+
+def _profile(value: object) -> ProfileId:
+    for profile in PROFILES:
+        if value == profile:
+            return profile
+    raise SessionInputError(f"Choose a focus profile from {', '.join(PROFILES)}")
+
+
+def _contest_duration(profile: ProfileId, value: object) -> int | None:
+    if value is None:
+        return None
+    if (
+        profile != "contest"
+        or type(value) is not int
+        or not 1 <= value <= MAX_CONTEST_MINUTES
+    ):
+        raise SessionInputError(
+            f"Choose 1 to {MAX_CONTEST_MINUTES} minutes for a Contest timer"
+        )
     return value

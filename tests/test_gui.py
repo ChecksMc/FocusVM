@@ -284,7 +284,15 @@ class _SessionService:
     def status(self) -> FocusSession | None:
         return self.current
 
-    def start(self, target: UUID | None, profile: str, network: str) -> FocusSession:
+    def start(
+        self,
+        target: UUID | None,
+        profile: str,
+        network: str,
+        *,
+        duration_minutes: int | None = None,
+        cage: bool = False,
+    ) -> FocusSession:
         self.started_signal.set()
         if not self.finish_start.wait(timeout=3):
             raise SessionError("Test did not release pending focus session start")

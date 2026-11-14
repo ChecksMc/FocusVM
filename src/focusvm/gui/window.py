@@ -9,6 +9,7 @@ from PySide6.QtCore import QProcess, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -34,10 +36,10 @@ from ..config import (
     VMDefaults,
 )
 from ..diagnostics import Diagnostic, diagnose
+from ..profiles import PROFILES
 from ..sessions import (
+    MAX_CONTEST_MINUTES,
     OFFLINE_NETWORKS,
-    PROFILE_ID,
-    PROFILE_NAME,
     FocusSession,
     SessionService,
 )
@@ -254,9 +256,22 @@ class MainWindow(QMainWindow):
         self.session_network = QComboBox()
         self.session_network.setObjectName("sessionNetwork")
         self.session_network.addItems([mode.capitalize() for mode in OFFLINE_NETWORKS])
-        form.addRow("Profile", _label("sessionProfile", PROFILE_NAME))
+        self.session_profile = QComboBox()
+        self.session_profile.setObjectName("sessionProfile")
+        self.session_profile.addItems([profile.name for profile in PROFILES.values()])
+        self.session_profile.currentIndexChanged.connect(self._set_profile_options)
+        self.session_duration = QSpinBox()
+        self.session_duration.setObjectName("sessionDuration")
+        self.session_duration.setRange(0, MAX_CONTEST_MINUTES)
+        self.session_duration.setSpecialValueText("No timer")
+        self.session_duration.setSuffix(" min")
+        self.session_cage = QCheckBox("Use Cage on Wayland")
+        self.session_cage.setObjectName("sessionCage")
+        form.addRow("&Profile", self.session_profile)
         form.addRow("Virtual machine", vm_row)
         form.addRow("&Network", self.session_network)
+        form.addRow("Contest timer", self.session_duration)
+        form.addRow("Viewer", self.session_cage)
         layout.addLayout(form)
         layout.addWidget(
             _label(
@@ -286,9 +301,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(
             _label(
                 "sessionExitHelp",
-                "In the viewer, press Shift+F12 to release input and Shift+F11 to leave "
-                "fullscreen. End the focus session here or run focusvm session end. "
-                "Ending the session keeps the guest running.",
+                "The regular viewer uses Shift+F12 to release input and Shift+F11 to leave "
+                "fullscreen. For Cage, close its host window. End the session here or run "
+                "focusvm session end from a host terminal. The guest stays running.",
             )
         )
         layout.addStretch()
@@ -379,6 +394,13 @@ class MainWindow(QMainWindow):
         self.session_choose_vm.setEnabled(ready and self.session is None)
         self.session_start.setEnabled(ready and can_start)
         self.session_network.setEnabled(ready and can_start)
+        self.session_profile.setEnabled(ready and can_start)
+        self.session_duration.setEnabled(
+            ready
+            and can_start
+            and self.session_profile.currentText() == PROFILES["contest"].name
+        )
+        self.session_cage.setEnabled(ready and can_start)
         self.session_reopen.setEnabled(
             ready and self.session is not None and self.session.state == "disconnected"
         )
@@ -435,6 +457,7 @@ class MainWindow(QMainWindow):
     def _show_settings(self, settings: Settings) -> None:
         self.settings = settings
         application = settings.application
+        self.session_profile.setCurrentText(PROFILES[application.default_profile].name)
         self.pool_input.setText(application.storage_pool)
         self.theme_input.setCurrentIndex(THEMES.index(application.theme))
         self.cpu_input.setText(str(settings.vm_defaults.cpus))
@@ -656,10 +679,25 @@ class MainWindow(QMainWindow):
             network = session.network.capitalize()
             if session.state != "unresolved":
                 network = f"{network} (offline)"
+            profile_name = next(
+                (
+                    profile.name
+                    for key, profile in PROFILES.items()
+                    if key == session.profile
+                ),
+                session.profile,
+            )
             status = (
                 f"{session.vm_name} · {session.state.capitalize()}\n"
-                f"{PROFILE_NAME} · {network} · {elapsed} elapsed"
+                f"{profile_name} · {network} · {elapsed} elapsed"
             )
+            if (remaining := session.remaining_seconds()) is not None:
+                timer = str(timedelta(seconds=remaining))
+                status += (
+                    f"\n{timer} remaining" if remaining else "\nContest timer expired."
+                )
+            if session.cage:
+                status += "\nCage viewer"
             if session.detail:
                 status = f"{status}\n{session.detail}"
             self.session_status.setText(status)
@@ -680,12 +718,24 @@ class MainWindow(QMainWindow):
         if selected is None or not self.session_start.isEnabled():
             return
         network = OFFLINE_NETWORKS[self.session_network.currentIndex()]
+        profile = tuple(PROFILES)[self.session_profile.currentIndex()]
+        duration = (
+            (self.session_duration.value() or None) if profile == "contest" else None
+        )
+        cage = self.session_cage.isChecked()
         self._submit(
             "Starting focus session…",
-            lambda: self.session_service.start(selected.uuid, PROFILE_ID, network),
+            lambda: self.session_service.start(
+                selected.uuid, profile, network, duration_minutes=duration, cage=cage
+            ),
             self._show_session,
             failure=self._session_action_error,
         )
+
+    def _set_profile_options(self, index: int) -> None:
+        profile = PROFILES[tuple(PROFILES)[index]]
+        self.session_network.setCurrentIndex(OFFLINE_NETWORKS.index(profile.network))
+        self._sync_actions()
 
     def _reopen_session(self) -> None:
         self._submit(

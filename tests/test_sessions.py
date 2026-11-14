@@ -1,4 +1,7 @@
+import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Barrier
 from unittest.mock import patch
@@ -134,6 +137,66 @@ def test_flexible_and_unsafe_vm_fail_before_persisting_intent(tmp_path: Path) ->
         with pytest.raises(VirtualizationError, match="Policy mismatch"):
             session.start(None)
     assert session.status() is None
+
+
+def test_contest_deadline_survives_reopen_and_can_expire_without_ending(
+    tmp_path: Path,
+) -> None:
+    vm_id = uuid4()
+    vm_service = VMService(tmp_path, tmp_path)
+    sessions = SessionService(tmp_path, vm_service)
+    with (
+        patch.object(vm_service, "focus_status", return_value=_vm(vm_id, active=True)),
+        patch.object(vm_service, "start"),
+        patch.object(vm_service, "check_console"),
+        patch("focusvm.sessions.check_focus_viewer", return_value=("virt-viewer", [])),
+        patch("focusvm.sessions.launch_focus_viewer"),
+        patch("focusvm.sessions.focus_viewer_running", return_value=False),
+        patch("focusvm.sessions.close_focus_viewer"),
+    ):
+        with pytest.raises(SessionInputError, match="Contest timer"):
+            sessions.start(vm_id, profile="research", duration_minutes=25)
+        contest = sessions.start(vm_id, profile="contest", duration_minutes=25)
+        assert contest.network == "strict"
+        assert contest.deadline is not None
+        assert datetime.fromisoformat(contest.deadline) - datetime.fromisoformat(
+            contest.started_at
+        ) == timedelta(minutes=25)
+        restored = SessionService(tmp_path, vm_service).reopen()
+        assert (restored.profile, restored.deadline) == (
+            contest.profile,
+            contest.deadline,
+        )
+        assert replace(restored, deadline=restored.started_at).remaining_seconds() == 0
+        assert sessions.status() is not None
+
+
+def test_phase_six_intent_recovers_as_deep_work(tmp_path: Path) -> None:
+    vm_id = uuid4()
+    vm_service = VMService(tmp_path, tmp_path)
+    sessions = SessionService(tmp_path, vm_service)
+    sessions.path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "token": str(uuid4()),
+                "vm": str(vm_id),
+                "vm_name": "development",
+                "network": "balanced",
+                "started_at": "2026-11-14T13:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with (
+        patch.object(vm_service, "focus_status", return_value=_vm(vm_id, active=True)),
+        patch("focusvm.sessions.focus_viewer_running", return_value=True),
+    ):
+        recovered = sessions.status()
+    assert recovered is not None
+    assert recovered.profile == "deep-work"
+    assert recovered.deadline is None
+    assert not recovered.cage
 
 
 def test_concurrent_starts_launch_one_viewer(tmp_path: Path) -> None:

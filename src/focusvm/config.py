@@ -9,12 +9,12 @@ from typing import Literal, Self, cast
 from uuid import UUID
 
 from .local_state import PrivateFileError, atomic_write, file_lock, open_owned_file
+from .profiles import PROFILES, ProfileId
 
 SCHEMA_VERSION = 1
 MAX_TOML_INTEGER = 2**63 - 1
 
 type Theme = Literal["system", "light", "dark"]
-type ProfileId = Literal["deep-work"]
 THEMES: tuple[Theme, ...] = ("system", "light", "dark")
 
 
@@ -223,9 +223,12 @@ def _theme(value: object) -> Theme:
 
 
 def _profile(value: object) -> ProfileId:
-    if value == "deep-work":
-        return "deep-work"
-    raise ConfigError("application.default_profile must be deep-work")
+    for profile in PROFILES:
+        if value == profile:
+            return profile
+    raise ConfigError(
+        f"application.default_profile must be one of {', '.join(PROFILES)}"
+    )
 
 
 def _vm_uuid(value: object) -> UUID | None:
