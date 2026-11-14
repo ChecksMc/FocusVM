@@ -317,6 +317,19 @@ class LibvirtBackend:
             self._validate_offline(self._owned_xml(domain, owner_id))
             self._validate_offline(self._owned_xml(domain, owner_id, live=True))
 
+    def focus_status(self, uuid: UUID, owner_id: UUID) -> VMStatus:
+        with self._operation(f"Cannot verify offline policy for VM {uuid}"):
+            domain = self._require_domain(uuid)
+            root = self._owned_xml(domain, owner_id)
+            self._validate_offline(root)
+            if domain.isActive():
+                self._validate_offline(self._owned_xml(domain, owner_id, live=True))
+            elif domain.hasManagedSaveImage(0):
+                raise VirtualizationError(
+                    "Resolve the VM's managed-save image before focusing"
+                )
+            return self._status(domain, root)
+
     def check_inventory(
         self, uuid: UUID, owner_id: UUID, overlay_key: str, seed_key: str
     ) -> None:

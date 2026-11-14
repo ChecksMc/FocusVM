@@ -240,6 +240,17 @@ def test_managed_save_prevents_start() -> None:
     assert domain.events == []
 
 
+def test_focus_preflight_rejects_network_drift_even_while_stopped() -> None:
+    domain = Domain()
+    devices = domain.inactive_xml.find("devices")
+    assert devices is not None
+    ET.SubElement(devices, "interface", {"type": "user"})
+
+    with pytest.raises(VirtualizationError, match="unexpected device"):
+        Connection(domain).backend().focus_status(VM_ID, OWNER)
+    assert domain.events == []
+
+
 def test_shutdown_timeout_preserves_running_vm() -> None:
     domain = Domain()
     domain.state = 1

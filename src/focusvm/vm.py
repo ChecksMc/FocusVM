@@ -197,6 +197,10 @@ class VMService:
         with self._domain(target, mutate=False) as (backend, vm, owner):
             backend.check_console(vm, owner)
 
+    def focus_status(self, target: UUID | None) -> VMStatus:
+        with self._domain(target, mutate=False) as (backend, vm, owner):
+            return backend.focus_status(vm, owner)
+
     def start(self, target: UUID | None) -> VMStatus:
         with self._domain(target, mutate=True) as (backend, vm, owner):
             return backend.start(vm, owner)
