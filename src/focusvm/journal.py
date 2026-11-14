@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
-from .local_state import atomic_write, file_lock, open_owned_file
+from .local_state import atomic_write, file_lock, open_private_file
 
 
 class JournalInputError(ValueError):
@@ -116,7 +116,7 @@ class Journal:
 
     def _load(self) -> tuple[JournalEntry, ...]:
         try:
-            with open(self.path, encoding="utf-8", opener=open_owned_file) as stream:
+            with open(self.path, encoding="utf-8", opener=open_private_file) as stream:
                 raw: object = json.load(stream)
             payload = _object(raw)
             version, entries = payload.get("version"), payload.get("entries")

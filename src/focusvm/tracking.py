@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from time import time
 from typing import cast
 
-from .local_state import atomic_write, file_lock, open_owned_file
+from .local_state import atomic_write, file_lock, open_private_file
 
 _HOST = "api.wakatime.com"
 _PATH = "/api/v1/users/current/heartbeats"
@@ -109,7 +109,7 @@ class ActivityQueue:
 
     def _load(self) -> Activity:
         try:
-            with open(self.path, encoding="utf-8", opener=open_owned_file) as stream:
+            with open(self.path, encoding="utf-8", opener=open_private_file) as stream:
                 raw: object = json.load(stream)
             payload = _object(raw)
             projects, queued = payload.get("projects"), payload.get("queued")

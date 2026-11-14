@@ -15,7 +15,13 @@ from tempfile import TemporaryDirectory
 from typing import BinaryIO, cast
 from uuid import uuid4
 
-from .local_state import PrivateFileError, atomic_write, file_lock, open_owned_file
+from .local_state import (
+    PrivateFileError,
+    atomic_write,
+    check_private_directory,
+    file_lock,
+    open_private_file,
+)
 
 RESOURCE_KINDS = {
     ".pdf": "pdf",
@@ -59,6 +65,9 @@ class ResourceLibrary:
     @contextmanager
     def _locked(self) -> Generator[None]:
         try:
+            data = self._directory.parent
+            data.mkdir(mode=0o700, parents=True, exist_ok=True)
+            check_private_directory(data)
             with file_lock(self._directory / "library"):
                 yield
         except PrivateFileError as error:
@@ -186,7 +195,7 @@ class ResourceLibrary:
             raise ResourceError(f"Unsafe resource directory: {resource_id}")
         try:
             with open(
-                directory / "metadata.json", "rb", opener=open_owned_file
+                directory / "metadata.json", "rb", opener=open_private_file
             ) as stream:
                 raw = stream.read(METADATA_LIMIT + 1)
             if len(raw) > METADATA_LIMIT:
@@ -201,7 +210,7 @@ class ResourceLibrary:
     @staticmethod
     def _open_resource(path: Path) -> BinaryIO:
         try:
-            return open(path, "rb", opener=open_owned_file)
+            return open(path, "rb", opener=open_private_file)
         except (OSError, PrivateFileError) as error:
             raise ResourceError(
                 f"Could not read stored resource {path.name}: {error}"

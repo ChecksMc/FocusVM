@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal, Self, cast
 from uuid import UUID
 
-from .local_state import PrivateFileError, atomic_write, file_lock, open_owned_file
+from .local_state import PrivateFileError, atomic_write, file_lock, open_private_file
 from .profiles import PROFILES, ProfileId
 
 SCHEMA_VERSION = 1
@@ -100,7 +100,7 @@ class ConfigStore:
 
     def load(self) -> Settings:
         try:
-            with open(self.path, "rb", opener=open_owned_file) as stream:
+            with open(self.path, "rb", opener=open_private_file) as stream:
                 document: dict[str, object] = tomllib.load(stream)
         except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
             raise ConfigError(f"Invalid TOML: {error}") from error

@@ -13,7 +13,7 @@ from tempfile import NamedTemporaryFile
 from typing import cast
 from urllib.parse import urlsplit
 
-from .local_state import atomic_write, file_lock, open_owned_file
+from .local_state import atomic_write, file_lock, open_private_file
 
 _MAX_BYTES = 2 * 1024 * 1024
 _DOMAIN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
@@ -33,7 +33,7 @@ class Research:
 
     def hosts(self) -> tuple[str, ...]:
         try:
-            with open(self.path, encoding="utf-8", opener=open_owned_file) as stream:
+            with open(self.path, encoding="utf-8", opener=open_private_file) as stream:
                 data: object = json.load(stream)
             if not isinstance(data, list):
                 raise ValueError("Expected a list of approved hosts")

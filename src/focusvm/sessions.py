@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import UUID, uuid4
 
-from .local_state import atomic_write, file_lock, open_owned_file
+from .local_state import atomic_write, file_lock, open_private_file
 from .profiles import PROFILES, ProfileId
 from .viewer import (
     ViewerError,
@@ -236,7 +236,7 @@ class SessionService:
 
     def _load(self) -> _Intent | None:
         try:
-            with open(self.path, encoding="utf-8", opener=open_owned_file) as stream:
+            with open(self.path, encoding="utf-8", opener=open_private_file) as stream:
                 record: object = json.load(stream)
             if record is None:
                 return None

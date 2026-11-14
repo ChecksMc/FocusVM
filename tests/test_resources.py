@@ -96,6 +96,19 @@ def test_rejects_symlinked_resource_directory(tmp_path: Path) -> None:
     assert not tuple(other.iterdir())
 
 
+def test_rejects_group_writable_or_symlinked_app_data_directory(tmp_path: Path) -> None:
+    data_dir = tmp_path / "focusvm"
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o775)
+    data_dir.symlink_to(shared, target_is_directory=True)
+    with pytest.raises(ResourceUnavailable, match="safe to write"):
+        ResourceLibrary(data_dir).list()
+    with pytest.raises(ResourceUnavailable, match="safe to write"):
+        ResourceLibrary(shared).list()
+    assert not tuple(shared.iterdir())
+
+
 def test_host_viewers_get_literal_absolute_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
