@@ -1,3 +1,4 @@
+import json
 from collections.abc import Generator
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
@@ -29,6 +30,8 @@ class _Backend:
         self.fail_after_define = False
         self.start_calls = 0
         self.read_modes: list[bool] = []
+        self.resource_volumes: dict[UUID, str | None] = {}
+        self.fail_after_resource_change = False
 
     @contextmanager
     def connect(self, *, read_only: bool = False) -> Generator["_Backend"]:
@@ -85,11 +88,40 @@ class _Backend:
         assert definition.owner_id == owner
         return status
 
-    def check_inventory(self, vm: UUID, owner: UUID, overlay: str, seed: str) -> None:
+    def check_inventory(
+        self, vm: UUID, owner: UUID, overlay: str, seed: str, resource_key: str | None
+    ) -> None:
         self.status(vm, owner)
         definition, _ = self.domains[vm]
-        if (definition.overlay.key, definition.seed.key) != (overlay, seed):
+        if (
+            definition.overlay.key,
+            definition.seed.key,
+            self.resource_volumes.get(vm),
+        ) != (overlay, seed, resource_key):
             raise VirtualizationError("Volume identity changed")
+
+    def resource_media(self, vm: UUID, owner: UUID) -> str | None:
+        self.status(vm, owner)
+        return self.resource_volumes.get(vm)
+
+    def ensure_resources_editable(self, vm: UUID, owner: UUID) -> None:
+        if self.status(vm, owner).active:
+            raise VirtualizationError("Shut down the VM before changing resource media")
+
+    def import_resource_iso(self, pool: str, vm: UUID, iso: Path) -> Volume:
+        return self._volume(f"focusvm-{vm}-resources-{iso.name}")
+
+    def set_resource_media(
+        self, vm: UUID, owner: UUID, volume: Volume | None
+    ) -> VMStatus:
+        self.resource_volumes[vm] = None if volume is None else volume.key
+        updated = replace(
+            self.status(vm, owner), resource_media_attached=volume is not None
+        )
+        self.domains[vm] = self.domains[vm][0], updated
+        if self.fail_after_resource_change:
+            raise VirtualizationError("connection lost after media change")
+        return updated
 
     def start(self, vm: UUID, owner: UUID) -> VMStatus:
         self.start_calls += 1
@@ -216,3 +248,58 @@ def test_rejects_unmanaged_or_changed_volume_before_start(
     with pytest.raises(VirtualizationError, match="identity changed"):
         service.start(original.uuid)
     assert backend.start_calls == 0
+
+
+def test_resource_change_recovers_after_definition_was_written(
+    vm_environment: tuple[VMService, _Backend, ImageInput], tmp_path: Path
+) -> None:
+    service, backend, source = vm_environment
+    vm = _create(service, source).uuid
+    backend.fail_after_resource_change = True
+
+    with pytest.raises(VirtualizationError, match="connection lost"):
+        service.attach_resources(vm, tmp_path / "docs.iso")
+    (pending,) = service.list_records()
+    assert pending.resource_key is None and pending.resource_change is not None
+    assert service.status(vm).resource_media_attached
+    assert service.list_records()[0] == pending
+
+    backend.fail_after_resource_change = False
+    assert service.start(vm).resource_media_attached
+    (ready,) = service.list_records()
+    assert ready.resource_key == backend.resource_volumes[vm]
+    assert ready.resource_change is None
+    service.stop(vm, 10)
+    assert not service.eject_resources(vm).resource_media_attached
+    assert service.list_records()[0].resource_key is None
+    assert not service.eject_resources(vm).resource_media_attached
+
+
+def test_resource_change_refuses_running_guest_and_external_drift(
+    vm_environment: tuple[VMService, _Backend, ImageInput], tmp_path: Path
+) -> None:
+    service, backend, source = vm_environment
+    vm = _create(service, source).uuid
+    service.start(vm)
+    with pytest.raises(VirtualizationError, match="Shut down"):
+        service.attach_resources(vm, tmp_path / "docs.iso")
+
+    service.stop(vm, 10)
+    service.attach_resources(vm, tmp_path / "docs.iso")
+    backend.resource_volumes[vm] = "different-media"
+    with pytest.raises(VirtualizationError, match="identity changed"):
+        service.start(vm)
+    assert backend.start_calls == 1
+
+
+def test_existing_v1_inventory_without_resources_remains_readable(
+    vm_environment: tuple[VMService, _Backend, ImageInput],
+) -> None:
+    service, _, source = vm_environment
+    vm = _create(service, source)
+    document: dict[str, list[dict[str, object]]] = json.loads(service.path.read_text())
+    document["records"][0].pop("resource_key")
+    document["records"][0].pop("resource_change")
+    service.path.write_text(json.dumps(document), encoding="utf-8")
+
+    assert service.status(vm.uuid) == vm

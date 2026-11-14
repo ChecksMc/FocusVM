@@ -18,6 +18,7 @@ from .virtualization import (
     VirtualizationError,
     VMDefinition,
     VMStatus,
+    Volume,
     connect,
 )
 
@@ -41,6 +42,11 @@ class VMStateError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class _ResourceChange:
+    key: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class VMRecord:
     uuid: UUID
     name: str
@@ -51,6 +57,8 @@ class VMRecord:
     base_key: str | None = None
     overlay_key: str | None = None
     seed_key: str | None = None
+    resource_key: str | None = None
+    resource_change: _ResourceChange | None = None
 
 
 @dataclass(slots=True)
@@ -134,9 +142,11 @@ class VMService:
                     ) from error
                 self._save_record(inventory, replace(record, phase="abandoned"))
                 return None
-            self._check_receipts(backend, inventory.owner_id, record)
+            record = self._check_receipts(backend, inventory.owner_id, record)
             if record.phase == "pending":
                 self._save_record(inventory, replace(record, phase="ready"))
+            else:
+                self._persist_reconciled(inventory, record)
             return status
         return None
 
@@ -216,6 +226,48 @@ class VMService:
         with self._domain(target, mutate=True) as (backend, vm, owner):
             return backend.configure(vm, owner, resources.cpus, resources.memory_mib)
 
+    def attach_resources(self, target: UUID | None, iso: Path) -> VMStatus:
+        return self._change_resources(target, iso)
+
+    def eject_resources(self, target: UUID | None) -> VMStatus:
+        return self._change_resources(target, None)
+
+    @contextmanager
+    def offline_disk(self, target: UUID | None) -> Generator[Path]:
+        # Hold the same lock as start and attach throughout the caller's read.
+        with file_lock(self.path), connect(read_only=True) as backend:
+            inventory = self._load()
+            record = self._check_receipts(
+                backend, inventory.owner_id, _select_vm(inventory, target)
+            )
+            if record.base_key is None:
+                raise VMStateError("The VM inventory has no backing image receipt")
+            yield backend.offline_disk(record.uuid, inventory.owner_id, record.base_key)
+
+    def _change_resources(self, target: UUID | None, iso: Path | None) -> VMStatus:
+        with file_lock(self.path), connect() as backend:
+            inventory = self._load()
+            record = self._check_receipts(
+                backend, inventory.owner_id, _select_vm(inventory, target)
+            )
+            self._persist_reconciled(inventory, record)
+            backend.ensure_resources_editable(record.uuid, inventory.owner_id)
+            volume: Volume | None = None
+            if iso is not None:
+                volume = backend.import_resource_iso(
+                    record.storage_pool, record.uuid, iso
+                )
+            desired = None if volume is None else volume.key
+            if desired == record.resource_key:
+                return backend.status(record.uuid, inventory.owner_id)
+
+            self._save_record(
+                inventory, replace(record, resource_change=_ResourceChange(desired))
+            )
+            status = backend.set_resource_media(record.uuid, inventory.owner_id, volume)
+            self._save_record(inventory, replace(record, resource_key=desired))
+            return status
+
     @contextmanager
     def _domain(
         self, target: UUID | None, *, mutate: bool
@@ -224,19 +276,33 @@ class VMService:
             inventory = self._load()
             record = _select_vm(inventory, target)
             with connect(read_only=not mutate) as backend:
-                self._check_receipts(backend, inventory.owner_id, record)
+                record = self._check_receipts(backend, inventory.owner_id, record)
+                if mutate:
+                    self._persist_reconciled(inventory, record)
                 yield backend, record.uuid, inventory.owner_id
 
     def _check_receipts(
         self, backend: LibvirtBackend, owner_id: UUID, record: VMRecord
-    ) -> None:
+    ) -> VMRecord:
         if record.overlay_key is None or record.seed_key is None:
             raise VMStateError(
                 f"VM {record.uuid} has an incomplete creation record. Retry the create command."
             )
+        key = record.resource_key
+        if record.resource_change is not None:
+            key = backend.resource_media(record.uuid, owner_id)
+            if key not in (record.resource_key, record.resource_change.key):
+                raise VMStateError(
+                    "The VM has an unexpected resource volume after an interrupted change"
+                )
         backend.check_inventory(
-            record.uuid, owner_id, record.overlay_key, record.seed_key
+            record.uuid, owner_id, record.overlay_key, record.seed_key, key
         )
+        return replace(record, resource_key=key, resource_change=None)
+
+    def _persist_reconciled(self, inventory: _Inventory, record: VMRecord) -> None:
+        if record != inventory.records[record.uuid]:
+            self._save_record(inventory, record)
 
     def _load(self) -> _Inventory:
         try:
@@ -319,7 +385,18 @@ def _record(value: object) -> VMRecord:
         base_key=_optional_string(data, "base_key"),
         overlay_key=_optional_string(data, "overlay_key"),
         seed_key=_optional_string(data, "seed_key"),
+        resource_key=_optional_string(data, "resource_key"),
+        resource_change=_resource_change(data.get("resource_change")),
     )
+
+
+def _resource_change(value: object) -> _ResourceChange | None:
+    if value is None:
+        return None
+    change = _mapping(value)
+    if set(change) != {"key"}:
+        raise ValueError("Invalid pending resource change")
+    return _ResourceChange(_optional_string(change, "key"))
 
 
 def _mapping(value: object) -> Mapping[str, object]:

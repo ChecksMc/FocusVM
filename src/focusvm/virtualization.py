@@ -6,15 +6,19 @@ import hashlib
 import importlib
 import math
 import os
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from io import BufferedReader
 from pathlib import Path
 from typing import Protocol, cast
 from uuid import UUID, uuid4
 from xml.etree import ElementTree as ET
+
+from .local_state import open_owned_file
 
 URI = "qemu:///system"
 ARCH = "x86_64"
@@ -22,6 +26,8 @@ MACHINE = "q35"
 METADATA_NS = "https://focusvm.local/libvirt/1"
 MANAGED_TAG = f"{{{METADATA_NS}}}managed"
 CHUNK_SIZE = 1024 * 1024
+RESOURCE_ISO_LABEL = "FOCUSVM_DOCS"
+_ISO_SECTOR = 2048
 
 DOMAIN_STATES = {
     0: "no-state",
@@ -81,6 +87,7 @@ class VMStatus:
     memory_mib: int
     disk_capacity_bytes: int
     disk_allocation_bytes: int
+    resource_media_attached: bool = False
 
 
 class _DriverError(Exception, ABC):
@@ -268,6 +275,17 @@ class LibvirtBackend:
         with self._operation(f"Cannot import first-boot media {name!r}"):
             return _volume(self._upload(self._directory_pool(pool), name, path))
 
+    def import_resource_iso(self, pool: str, uuid: UUID, iso: Path) -> Volume:
+        with (
+            self._operation(f"Cannot import resource media for VM {uuid}"),
+            open(iso, "rb", opener=open_owned_file) as source,
+        ):
+            _validate_resource_iso(source)
+            name = f"focusvm-{uuid}-resources-{uuid4().hex}.iso"
+            volume = self._upload_stream(self._directory_pool(pool), name, source)
+            self._validate_resource_volume(volume, uuid)
+            return _volume(volume)
+
     def define(self, definition: VMDefinition) -> VMStatus:
         _validate_resources(definition.cpus, definition.memory_mib)
         with self._operation(f"Cannot define VM {definition.name!r}"):
@@ -331,7 +349,12 @@ class LibvirtBackend:
             return self._status(domain, root)
 
     def check_inventory(
-        self, uuid: UUID, owner_id: UUID, overlay_key: str, seed_key: str
+        self,
+        uuid: UUID,
+        owner_id: UUID,
+        overlay_key: str,
+        seed_key: str,
+        resource_key: str | None = None,
     ) -> None:
         with self._operation(f"Cannot check VM {uuid} against the inventory"):
             domain = self._require_domain(uuid)
@@ -344,11 +367,80 @@ class LibvirtBackend:
                     metadata is None
                     or metadata.get("overlay") != overlay_key
                     or metadata.get("seed") != seed_key
+                    or metadata.get("resources") != resource_key
                 ):
                     raise VirtualizationError(
                         f"VM {uuid} no longer matches its recorded volume identities"
                     )
                 self._validate_volume_paths(root)
+
+    def resource_media(self, uuid: UUID, owner_id: UUID) -> str | None:
+        with self._operation(f"Cannot inspect resource media for VM {uuid}"):
+            domain = self._require_domain(uuid)
+            return _require_metadata(self._owned_xml(domain, owner_id)).get("resources")
+
+    def ensure_resources_editable(self, uuid: UUID, owner_id: UUID) -> None:
+        with self._operation(f"Cannot change resource media for VM {uuid}"):
+            self._stopped_offline_xml(uuid, owner_id)
+
+    def offline_disk(self, uuid: UUID, owner_id: UUID, base_key: str) -> Path:
+        with self._operation(f"Cannot open the stopped VM disk {uuid}"):
+            _, root = self._stopped_offline_xml(uuid, owner_id)
+            overlay, _ = self._storage(root)
+            base = self._connection.storageVolLookupByKey(base_key)
+            base_xml = _xml(base.XMLDesc(0))
+            overlay_xml = _xml(overlay.XMLDesc(0))
+            if (
+                base_xml.find("target/format[@type='qcow2']") is None
+                or base_xml.find("backingStore/path") is not None
+                or overlay_xml.find("target/format[@type='qcow2']") is None
+                or overlay_xml.findtext("backingStore/path") != base.path()
+                or overlay_xml.find("backingStore/format[@type='qcow2']") is None
+                or overlay_xml.find("backingStore/backingStore/path") is not None
+            ):
+                raise VirtualizationError(
+                    "VM disk backing image does not match its inventory"
+                )
+            return Path(overlay.path())
+
+    def set_resource_media(
+        self, uuid: UUID, owner_id: UUID, volume: Volume | None
+    ) -> VMStatus:
+        with self._operation(f"Cannot change resource media for VM {uuid}"):
+            domain, root = self._stopped_offline_xml(uuid, owner_id)
+            metadata = _require_metadata(root)
+            key = None if volume is None else volume.key
+            if metadata.get("resources") == key:
+                return self._status(domain, root)
+
+            devices = root.find("devices")
+            if devices is None:
+                raise VirtualizationError("VM has no managed devices")
+            previous_disk = _find_disk(root, "sdb")
+            if previous_disk is not None:
+                devices.remove(previous_disk)
+            if volume is None:
+                metadata.attrib.pop("resources", None)
+            else:
+                actual = self._connection.storageVolLookupByKey(volume.key)
+                self._validate_resource_volume(actual, uuid)
+                if _volume(actual) != volume:
+                    raise VirtualizationError(
+                        "Resource volume changed before attachment"
+                    )
+                _add_disk(devices, volume, "sdb", "cdrom", "raw", "sata")
+                metadata.set("resources", volume.key)
+            self._validate_offline(root)
+            domain = self._connection.defineXMLFlags(
+                _serialize(root), self._driver.VIR_DOMAIN_DEFINE_VALIDATE
+            )
+            actual_definition = self._owned_xml(domain, owner_id)
+            self._validate_offline(actual_definition)
+            if _require_metadata(actual_definition).get("resources") != key:
+                raise VirtualizationError(
+                    "Libvirt did not persist the requested resource media"
+                )
+            return self._status(domain, actual_definition)
 
     def start(self, uuid: UUID, owner_id: UUID) -> VMStatus:
         with self._operation(f"Cannot start VM {uuid}"):
@@ -432,26 +524,27 @@ class LibvirtBackend:
         return pool
 
     def _upload(self, pool: _Pool, name: str, path: Path) -> _Volume:
-        # Upload bytes into a raw file first. A refresh identifies the actual image format.
         with path.open("rb") as source:
-            length = os.fstat(source.fileno()).st_size
-            volume = pool.createXML(_serialize(_volume_xml(name, length, "raw")), 0)
-            stream = self._connection.newStream(0)
-            try:
-                volume.upload(stream, 0, length, 0)
-                while chunk := source.read(CHUNK_SIZE):
-                    while chunk:
-                        written = stream.send(chunk)
-                        if written <= 0:
-                            raise VirtualizationError(
-                                f"Upload to volume {name!r} stalled"
-                            )
-                        chunk = chunk[written:]
-                stream.finish()
-            except (OSError, VirtualizationError, self._driver.libvirtError):
-                with suppress(self._driver.libvirtError):
-                    stream.abort()
-                raise
+            return self._upload_stream(pool, name, source)
+
+    def _upload_stream(self, pool: _Pool, name: str, source: BufferedReader) -> _Volume:
+        # Upload bytes into a raw file first. A refresh identifies the actual image format.
+        length = os.fstat(source.fileno()).st_size
+        volume = pool.createXML(_serialize(_volume_xml(name, length, "raw")), 0)
+        stream = self._connection.newStream(0)
+        try:
+            volume.upload(stream, 0, length, 0)
+            while chunk := source.read(CHUNK_SIZE):
+                while chunk:
+                    written = stream.send(chunk)
+                    if written <= 0:
+                        raise VirtualizationError(f"Upload to volume {name!r} stalled")
+                    chunk = chunk[written:]
+            stream.finish()
+        except (OSError, VirtualizationError, self._driver.libvirtError):
+            with suppress(self._driver.libvirtError):
+                stream.abort()
+            raise
         pool.refresh(0)
         return pool.storageVolLookupByName(name)
 
@@ -526,12 +619,12 @@ class LibvirtBackend:
             memory_mib=(memory or max_memory) // 1024,
             disk_capacity_bytes=capacity,
             disk_allocation_bytes=allocated,
+            resource_media_attached=_require_metadata(root).get("resources")
+            is not None,
         )
 
     def _storage(self, root: ET.Element) -> tuple[_Volume, _Volume]:
-        metadata = _metadata(root)
-        if metadata is None:
-            raise VirtualizationError("VM is missing its FocusVM metadata")
+        metadata = _require_metadata(root)
         overlay_key = metadata.get("overlay")
         seed_key = metadata.get("seed")
         if not overlay_key or not seed_key or overlay_key == seed_key:
@@ -549,6 +642,43 @@ class LibvirtBackend:
         overlay, seed = self._storage(root)
         _validate_disk(root, "vda", "disk", overlay.path(), "qcow2")
         _validate_disk(root, "sda", "cdrom", seed.path(), "raw")
+        resource_key = _require_metadata(root).get("resources")
+        if len(root.findall("devices/disk")) != (2 if resource_key is None else 3):
+            raise VirtualizationError(
+                "VM definition contains unexpected storage devices"
+            )
+        if resource_key is not None:
+            volume = self._connection.storageVolLookupByKey(resource_key)
+            self._validate_resource_volume(volume, UUID(root.findtext("uuid", "")))
+            _validate_disk(root, "sdb", "cdrom", volume.path(), "raw")
+
+    def _stopped_offline_xml(
+        self, uuid: UUID, owner_id: UUID
+    ) -> tuple[_Domain, ET.Element]:
+        domain = self._require_domain(uuid)
+        root = self._owned_xml(domain, owner_id)
+        if domain.isActive() or domain.hasManagedSaveImage(0):
+            raise VirtualizationError(
+                "Shut down the VM and resolve any managed-save image first"
+            )
+        self._validate_offline(root)
+        return domain, root
+
+    def _validate_resource_volume(self, volume: _Volume, uuid: UUID) -> None:
+        name = volume.name()
+        description = _xml(volume.XMLDesc(0))
+        if (
+            not re.fullmatch(rf"focusvm-{uuid}-resources-[0-9a-f]{{32}}\.iso", name)
+            or Path(volume.path()).name != name
+            or (
+                description.find("target/format[@type='raw']") is None
+                and description.find("target/format[@type='iso']") is None
+            )
+            or description.find("backingStore/path") is not None
+        ):
+            raise VirtualizationError(
+                "VM resource media is not a managed raw ISO volume"
+            )
 
 
 def _xml(document: str) -> ET.Element:
@@ -588,6 +718,13 @@ def _volume_xml(name: str, capacity: int, format_name: str) -> ET.Element:
 
 def _metadata(root: ET.Element) -> ET.Element | None:
     return root.find(f"metadata/{MANAGED_TAG}")
+
+
+def _require_metadata(root: ET.Element) -> ET.Element:
+    metadata = _metadata(root)
+    if metadata is None:
+        raise VirtualizationError("VM is missing its FocusVM metadata")
+    return metadata
 
 
 def _owner_matches(root: ET.Element, owner_id: UUID) -> bool:
@@ -718,8 +855,6 @@ def _validate_offline_devices(root: ET.Element) -> None:
         raise VirtualizationError(
             "VM display must be private SPICE with sharing disabled"
         )
-    if len(devices.findall("disk")) != 2:
-        raise VirtualizationError("VM definition contains unexpected storage devices")
 
 
 def _is_q35(machine: str) -> bool:
@@ -741,24 +876,41 @@ def _private_spice(graphics: ET.Element) -> bool:
 def _validate_disk(
     root: ET.Element, target: str, device: str, path: str, format_name: str
 ) -> None:
-    disk = next(
-        (
-            entry
-            for entry in root.findall("devices/disk")
-            if entry.find(f"target[@dev='{target}']") is not None
-        ),
-        None,
-    )
+    disk = _find_disk(root, target)
+    source = None if disk is None else disk.find("source")
+    bus = "sata" if device == "cdrom" else "virtio"
     if (
         disk is None
         or disk.get("device") != device
         or disk.get("type") != "file"
         or disk.find(f"driver[@type='{format_name}']") is None
+        or disk.find(f"target[@dev='{target}'][@bus='{bus}']") is None
         or (device == "cdrom" and disk.find("readonly") is None)
-        or not any(source.get("file") == path for source in disk.findall("source"))
+        or source is None
+        or source.get("file") != path
+        or len(disk.findall("source")) != 1
+        or source.find("host") is not None
         or disk.find(".//dataStore") is not None
         or any(
             layer.get("type", "file") != "file" for layer in disk.iter("backingStore")
         )
     ):
         raise VirtualizationError(f"VM disk {target} does not match its managed volume")
+
+
+def _find_disk(root: ET.Element, target: str) -> ET.Element | None:
+    return root.find(f"devices/disk/target[@dev='{target}']/..")
+
+
+def _validate_resource_iso(source: BufferedReader) -> None:
+    size = os.fstat(source.fileno()).st_size
+    source.seek(16 * _ISO_SECTOR)
+    descriptor = source.read(_ISO_SECTOR)
+    source.seek(0)
+    if (
+        size % _ISO_SECTOR != 0
+        or len(descriptor) != _ISO_SECTOR
+        or descriptor[:7] != b"\x01CD001\x01"
+        or descriptor[40:72].rstrip(b" ") != RESOURCE_ISO_LABEL.encode("ascii")
+    ):
+        raise VirtualizationError("Expected a finalized FocusVM resource ISO")

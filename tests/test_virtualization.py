@@ -29,6 +29,8 @@ OWNER = UUID(int=2)
 FOREIGN_OWNER = UUID(int=3)
 OVERLAY = Volume("overlay.qcow2", "overlay-key", Path("/storage/overlay.qcow2"))
 SEED = Volume("seed.iso", "seed-key", Path("/storage/seed.iso"))
+RESOURCE_NAME = f"focusvm-{VM_ID}-resources-{'1' * 32}.iso"
+RESOURCE = Volume(RESOURCE_NAME, "resource-key", Path("/storage") / RESOURCE_NAME)
 DEFINITION = VMDefinition(VM_ID, "focusvm-test", OWNER, 2, 4096, OVERLAY, SEED)
 
 
@@ -49,11 +51,24 @@ class Driver:
 
 
 class StorageVolume:
-    def __init__(self, volume: Volume) -> None:
+    def __init__(self, volume: Volume, storage_format: str = "raw") -> None:
         self.volume = volume
+        self.storage_format = storage_format
 
     def path(self) -> str:
         return str(self.volume.path)
+
+    def name(self) -> str:
+        return self.volume.name
+
+    def key(self) -> str:
+        return self.volume.key
+
+    def XMLDesc(self, flags: int) -> str:
+        assert flags == 0
+        return (
+            f"<volume><target><format type='{self.storage_format}'/></target></volume>"
+        )
 
     def infoFlags(self, flags: int) -> list[int]:
         assert flags == Driver.VIR_STORAGE_VOL_GET_PHYSICAL
@@ -125,6 +140,7 @@ class Connection:
     def __init__(self, domain: Domain | None) -> None:
         self.domain = domain
         self.define_calls = 0
+        self.resource_format = "raw"
 
     def lookupByUUIDString(self, uuid: str) -> Domain:
         if self.domain is not None and self.domain.UUIDString() == uuid:
@@ -137,7 +153,10 @@ class Connection:
         raise DriverError()
 
     def storageVolLookupByKey(self, key: str) -> StorageVolume:
-        return StorageVolume({OVERLAY.key: OVERLAY, SEED.key: SEED}[key])
+        return StorageVolume(
+            {OVERLAY.key: OVERLAY, SEED.key: SEED, RESOURCE.key: RESOURCE}[key],
+            self.resource_format if key == RESOURCE.key else "raw",
+        )
 
     def defineXMLFlags(self, xml: str, flags: int) -> Domain:
         assert flags == Driver.VIR_DOMAIN_DEFINE_VALIDATE
@@ -275,3 +294,57 @@ def test_stop_and_configure_use_owned_inactive_domain() -> None:
     updated = backend.configure(VM_ID, OWNER, 4, 8192)
     assert (updated.cpus, updated.memory_mib) == (4, 8192)
     assert domain.events == ["graceful-stop"]
+
+
+@pytest.mark.parametrize("media_format", ["raw", "iso"])
+def test_resources_redefine_only_secondary_readonly_cdrom_and_eject(
+    media_format: str,
+) -> None:
+    domain = Domain()
+    connection = Connection(domain)
+    connection.resource_format = media_format
+    backend = connection.backend()
+
+    assert backend.set_resource_media(VM_ID, OWNER, RESOURCE).resource_media_attached
+    assert connection.define_calls == 1
+    root = domain.inactive_xml
+    for target, path in (("sda", SEED.path), ("sdb", RESOURCE.path)):
+        disk = root.find(f"devices/disk/target[@dev='{target}'][@bus='sata']/..")
+        assert disk is not None and disk.get("device") == "cdrom"
+        assert disk.find("readonly") is not None
+        assert disk.find(f"source[@file='{path}']") is not None
+    backend.check_inventory(VM_ID, OWNER, OVERLAY.key, SEED.key, RESOURCE.key)
+    assert backend.start(VM_ID, OWNER).resource_media_attached
+    with pytest.raises(VirtualizationError, match="Shut down"):
+        backend.set_resource_media(VM_ID, OWNER, None)
+    backend.stop(VM_ID, OWNER, timeout=1)
+    assert not backend.set_resource_media(VM_ID, OWNER, None).resource_media_attached
+    assert domain.inactive_xml.find("devices/disk/target[@dev='sdb']") is None
+    assert domain.inactive_xml.find("devices/disk/target[@dev='sda']") is not None
+    backend.check_inventory(VM_ID, OWNER, OVERLAY.key, SEED.key)
+
+
+def test_resource_allowlist_refuses_external_writable_and_other_vm_volumes() -> None:
+    domain = Domain()
+    connection = Connection(domain)
+    backend = connection.backend()
+    with pytest.raises(VirtualizationError, match="not a managed raw ISO"):
+        backend.set_resource_media(VM_ID, OWNER, SEED)
+    backend.set_resource_media(VM_ID, OWNER, RESOURCE)
+    disk = domain.inactive_xml.find("devices/disk/target[@dev='sdb']/..")
+    assert disk is not None
+    read_only = disk.find("readonly")
+    assert read_only is not None
+    disk.remove(read_only)
+    with pytest.raises(VirtualizationError, match="disk sdb"):
+        backend.start(VM_ID, OWNER)
+    assert domain.events == []
+
+
+def test_resources_require_signed_layout_label_before_any_pool_access(
+    tmp_path: Path,
+) -> None:
+    arbitrary = tmp_path / "a.iso"
+    arbitrary.write_bytes(b"not an ISO")
+    with pytest.raises(VirtualizationError, match="finalized FocusVM resource ISO"):
+        Connection(Domain()).backend().import_resource_iso("pool", VM_ID, arbitrary)
