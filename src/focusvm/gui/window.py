@@ -35,7 +35,7 @@ from ..config import (
     Theme,
     VMDefaults,
 )
-from ..diagnostics import Diagnostic, diagnose
+from ..diagnostics import Diagnostic, diagnose_configured
 from ..profiles import PROFILES
 from ..sessions import (
     MAX_CONTEST_MINUTES,
@@ -54,6 +54,7 @@ from .tasks import TaskRunner
 _SETTINGS_PAGE = 2
 _SESSIONS_PAGE = 3
 _RESOURCES_PAGE = 4
+_VM_STATUS_PAGES = (0, 1)
 
 
 def _button(name: str, text: str) -> QPushButton:
@@ -78,12 +79,14 @@ class MainWindow(QMainWindow):
         self.service = VMService(paths.state_dir, paths.cache_dir)
         self.session_service = SessionService(paths.state_dir, self.service)
         self.tasks = TaskRunner(self)
+        self.status_tasks = TaskRunner(self)
         self.settings: Settings | None = None
         self.records: tuple[VMRecord, ...] = ()
         self.status: VMStatus | None = None
         self.session: FocusSession | None = None
         self.session_checked = False
-        self.polling = False
+        self._status_generation = 0
+        self._status_pending = False
         self.wizard: SetupWizard | None = None
         self.show_wizard = show_wizard
         self.setWindowTitle("FocusVM")
@@ -126,6 +129,10 @@ class MainWindow(QMainWindow):
         self.poll.setInterval(5000)
         self.poll.timeout.connect(self._poll_selected)
         self.poll.start()
+        self.session_clock = QTimer(self)
+        self.session_clock.setInterval(1000)
+        self.session_clock.timeout.connect(self._tick_session)
+        self.session_clock.start()
         self._sync_actions()
         QTimer.singleShot(0, self._load_settings)
 
@@ -292,7 +299,7 @@ class MainWindow(QMainWindow):
             (self.session_start, self._start_session),
             (self.session_reopen, self._reopen_session),
             (self.session_end, self._end_session),
-            (self.session_refresh, self._poll_session),
+            (self.session_refresh, self._request_status),
         ):
             button.clicked.connect(action)
             actions.addWidget(button)
@@ -312,12 +319,8 @@ class MainWindow(QMainWindow):
     def _page_changed(self, index: int) -> None:
         if index == _SESSIONS_PAGE:
             self.session_checked = False
-            self._poll_session_if_needed()
-            self._sync_actions()
-
-    def _poll_session_if_needed(self) -> None:
-        if not self.session_checked and self.pages.currentIndex() == _SESSIONS_PAGE:
-            self._poll_session()
+        self._request_status()
+        self._sync_actions()
 
     def _submit[T](
         self,
@@ -329,15 +332,18 @@ class MainWindow(QMainWindow):
     ) -> None:
         def finish(result: T) -> None:
             self.task_status.setText("")
-            self._sync_actions()
             success(result)
-            self._poll_session_if_needed()
+            self._sync_actions()
+            self._poll_pending_status()
 
         def failed(message: str) -> None:
             (failure or self._error)(message)
-            self._poll_session_if_needed()
+            self._poll_pending_status()
 
         if self.tasks.submit(label, operation, finish, failed):
+            self._status_generation += 1
+            if self.status_tasks.busy:
+                self._status_pending = True
             self.task_status.setText(label)
             self._sync_actions()
 
@@ -347,7 +353,7 @@ class MainWindow(QMainWindow):
 
     def _sync_actions(self) -> None:
         ready = not self.tasks.busy
-        settings_ready = self.settings is not None and (ready or self.polling)
+        settings_ready = self.settings is not None and ready
         active = self.status is not None and self.status.active
         self.host_check.setEnabled(ready)
         self.setup_button.setVisible(self.settings is None)
@@ -448,6 +454,7 @@ class MainWindow(QMainWindow):
         def finished(_result: int) -> None:
             self.wizard = None
             self._sync_actions()
+            self._poll_pending_status()
 
         wizard.accepted.connect(accepted)
         wizard.finished.connect(finished)
@@ -542,13 +549,6 @@ class MainWindow(QMainWindow):
         self._submit("Saving settings…", lambda: self.store.update(update), saved)
 
     def _check_host(self) -> None:
-        def check() -> list[Diagnostic]:
-            try:
-                pool = self.store.load().application.storage_pool
-            except FileNotFoundError:
-                pool = None
-            return diagnose(self.paths, pool)
-
         def show(checks: list[Diagnostic]) -> None:
             self.host_results.setPlainText(
                 "\n".join(
@@ -557,7 +557,9 @@ class MainWindow(QMainWindow):
                 )
             )
 
-        self._submit("Checking the host…", check, show)
+        self._submit(
+            "Checking the host…", lambda: diagnose_configured(self.paths), show
+        )
 
     def _refresh(self) -> None:
         self._refresh_inventory()
@@ -611,65 +613,86 @@ class MainWindow(QMainWindow):
             )
         else:
             self._set_vm_text("Reading VM status…")
-            self._submit(
-                "Reading VM status…",
-                lambda: self.service.status(selected.uuid),
-                self._show_status,
-                failure=self._status_error,
-            )
+            self._request_status()
         self._sync_actions()
+
+    def _request_status(self) -> None:
+        self._status_pending = True
+        self._poll_pending_status()
+
+    def _poll_pending_status(self) -> None:
+        if self._status_pending:
+            self._poll_selected()
 
     def _poll_selected(self) -> None:
-        if self.pages.currentIndex() == _SESSIONS_PAGE:
-            self._poll_session()
-            return
-        selected = self._selection()
         if (
             self.tasks.busy
-            or self.wizard is not None
-            or self.pages.currentIndex() == _SETTINGS_PAGE
-            or QApplication.activeModalWidget() is not None
-            or selected is None
-            or selected.phase != "ready"
-        ):
-            return
-
-        def polled(status: VMStatus) -> None:
-            self.polling = False
-            self._show_status(status)
-            self._poll_session_if_needed()
-
-        def failed(message: str) -> None:
-            self.polling = False
-            self._status_error(message)
-            self._poll_session_if_needed()
-
-        self.polling = self.tasks.submit(
-            "Reading VM status…",
-            lambda: self.service.status(selected.uuid),
-            polled,
-            failed,
-        )
-        self._sync_actions()
-
-    def _poll_session(self) -> None:
-        if (
-            self.tasks.busy
+            or self.status_tasks.busy
             or self.wizard is not None
             or QApplication.activeModalWidget() is not None
         ):
             return
-        self.tasks.submit(
-            "Reading focus session status…",
-            self.session_service.status,
-            self._show_session,
-            self._session_status_error,
+        self._status_pending = False
+        page = self.pages.currentIndex()
+        generation = self._status_generation
+
+        def current() -> bool:
+            return (
+                generation == self._status_generation
+                and page == self.pages.currentIndex()
+            )
+
+        if page == _SESSIONS_PAGE:
+            self._read_status(
+                "Reading focus session status…",
+                self.session_service.status,
+                current,
+                self._show_session,
+                self._session_status_error,
+            )
+        elif page in _VM_STATUS_PAGES:
+            selected = self._selection()
+            if selected is None or selected.phase != "ready":
+                return
+            self._read_status(
+                "Reading VM status…",
+                lambda: self.service.status(selected.uuid),
+                lambda: current() and self._selection() == selected,
+                self._show_status,
+                self._status_error,
+            )
+
+    def _read_status[T](
+        self,
+        label: str,
+        operation: Callable[[], T],
+        current: Callable[[], bool],
+        success: Callable[[T], None],
+        failure: Callable[[str], None],
+    ) -> None:
+        def deliver[Result](callback: Callable[[Result], None], value: Result) -> None:
+            if current():
+                callback(value)
+            self._poll_pending_status()
+
+        self.status_tasks.submit(
+            label,
+            operation,
+            lambda result: deliver(success, result),
+            lambda message: deliver(failure, message),
         )
-        self._sync_actions()
 
     def _show_session(self, session: FocusSession | None) -> None:
         self.session = session
         self.session_checked = True
+        self._render_session(session)
+        self._sync_actions()
+
+    def _tick_session(self) -> None:
+        if self.pages.currentIndex() == _SESSIONS_PAGE and self.session is not None:
+            self._render_session(self.session)
+
+    def _render_session(self, session: FocusSession | None) -> None:
         if session is None:
             self.session_status.setText("No focus session is running.")
         else:
@@ -701,7 +724,6 @@ class MainWindow(QMainWindow):
             if session.detail:
                 status = f"{status}\n{session.detail}"
             self.session_status.setText(status)
-        self._sync_actions()
 
     def _session_status_error(self, message: str) -> None:
         self.session = None
@@ -711,7 +733,7 @@ class MainWindow(QMainWindow):
 
     def _session_action_error(self, message: str) -> None:
         self._error(message)
-        self._poll_session()
+        self._request_status()
 
     def _start_session(self) -> None:
         selected = self._selection()
@@ -760,8 +782,6 @@ class MainWindow(QMainWindow):
     def _status_error(self, message: str) -> None:
         self.status = None
         self._set_vm_text(f"VM status is unavailable. {message}")
-        if self.task_status.text() == "Reading VM status…":
-            self.task_status.clear()
         self._sync_actions()
 
     def _set_vm_text(self, text: str) -> None:
@@ -849,7 +869,12 @@ class MainWindow(QMainWindow):
         self._submit("Opening the VM console…", prepare, open_viewer)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self.tasks.busy or self.resources_page.tasks.busy or self.wizard is not None:
+        if (
+            self.tasks.busy
+            or self.status_tasks.busy
+            or self.resources_page.tasks.busy
+            or self.wizard is not None
+        ):
             self.task_status.setText(
                 "Wait for the current operation or finish setup before closing."
             )

@@ -1,5 +1,8 @@
+# These tests observe callbacks behind the window's Qt event-handling boundary.
+# pyright: reportPrivateUsage=false
+
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from threading import Event
 from uuid import UUID, uuid4
@@ -12,12 +15,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QPlainTextEdit,
     QPushButton,
     QWidget,
 )
 from pytestqt.qtbot import QtBot
 
 from focusvm.config import ConfigPaths, ConfigStore, Settings, VMDefaults
+from focusvm.diagnostics import Diagnostic
 from focusvm.gui import window as gui_window
 from focusvm.gui.dialogs import CreateVMDialog
 from focusvm.provisioning import ImageInput
@@ -174,6 +179,26 @@ def test_manager_saves_shared_settings(qtbot: QtBot, desktop: Desktop) -> None:
     assert settings.vm_defaults == VMDefaults(4, 6144, 64)
 
 
+def test_host_checks_continue_with_invalid_settings(
+    qtbot: QtBot, desktop: Desktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window, store, _ = desktop
+    check = _widget(window, QPushButton, "hostCheckButton")
+    results = _widget(window, QPlainTextEdit, "hostResults")
+    qtbot.waitUntil(lambda: window.settings is not None and check.isEnabled())
+    store.path.write_text("invalid = [", encoding="utf-8")
+
+    def host_checks(paths: ConfigPaths, pool: str | None) -> list[Diagnostic]:
+        assert paths == window.paths
+        assert pool is None
+        return [Diagnostic("kvm", "ok", "KVM available")]
+
+    monkeypatch.setattr("focusvm.diagnostics.diagnose", host_checks)
+    check.click()
+    qtbot.waitUntil(lambda: "KVM available" in results.toPlainText())
+    assert "ERROR  Configuration" in results.toPlainText()
+
+
 def test_manager_runs_vm_actions_without_blocking_navigation(
     qtbot: QtBot, desktop: Desktop
 ) -> None:
@@ -200,6 +225,54 @@ def test_manager_runs_vm_actions_without_blocking_navigation(
     stop.click()
     qtbot.waitUntil(start.isEnabled)
     assert not open_vm.isEnabled()
+
+
+def test_passive_vm_poll_leaves_actions_available_and_discards_stale_results(
+    qtbot: QtBot, desktop: Desktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window, _, service = desktop
+    _go_to(window, "Virtual Machines")
+    start = _widget(window, QPushButton, "startButton")
+    stop = _widget(window, QPushButton, "stopButton")
+    status = _widget(window, QLabel, "vmStatus")
+    qtbot.waitUntil(start.isEnabled)
+    window.poll.stop()
+    original = service.status
+    stale = replace(original(VM_ID), name="Stale VM poll")
+    poll_started, release_poll, committed = Event(), Event(), Event()
+    seen: list[str] = []
+
+    def delayed_status(target: UUID | None) -> VMStatus:
+        if not poll_started.is_set():
+            poll_started.set()
+            if not release_poll.wait(3):
+                raise VirtualizationError("Test did not release pending status")
+            return stale
+        return original(target)
+
+    show_status = window._show_status
+
+    def record_status(result: VMStatus) -> None:
+        seen.append(result.name)
+        show_status(result)
+        if result.active:
+            committed.set()
+
+    monkeypatch.setattr(service, "status", delayed_status)
+    monkeypatch.setattr(window, "_show_status", record_status)
+    window.poll.timeout.emit()
+    try:
+        qtbot.waitUntil(poll_started.is_set)
+        assert start.isEnabled()
+        service.finish_start.set()
+        start.click()
+        qtbot.waitUntil(committed.is_set)
+        assert stop.isEnabled()
+        assert "Running" in status.text()
+    finally:
+        release_poll.set()
+    qtbot.waitUntil(lambda: not window.status_tasks.busy)
+    assert "Stale VM poll" not in seen
 
 
 def test_manager_surfaces_vm_errors_and_allows_retry(
@@ -311,6 +384,52 @@ class _SessionService:
         self.current = None
 
 
+def test_end_session_keeps_stale_passive_result_from_reopening_controls(
+    qtbot: QtBot, desktop: Desktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window, _, _ = desktop
+    sessions = _SessionService()
+    sessions.current = _session()
+    monkeypatch.setattr(window, "session_service", sessions)
+    _go_to(window, "Focus Sessions")
+    end = _widget(window, QPushButton, "sessionEndButton")
+    status = _widget(window, QLabel, "sessionStatus")
+    qtbot.waitUntil(end.isEnabled)
+    window.poll.stop()
+    poll_started, release_poll = Event(), Event()
+    stale = replace(sessions.current, vm_name="Stale session poll")
+    seen: list[str] = []
+
+    def delayed_status() -> FocusSession | None:
+        if not poll_started.is_set():
+            poll_started.set()
+            if not release_poll.wait(3):
+                raise SessionError("Test did not release pending status")
+            return stale
+        return sessions.current
+
+    show_session = window._show_session
+
+    def record_session(result: FocusSession | None) -> None:
+        if result is not None:
+            seen.append(result.vm_name)
+        show_session(result)
+
+    monkeypatch.setattr(sessions, "status", delayed_status)
+    monkeypatch.setattr(window, "_show_session", record_session)
+    window.poll.timeout.emit()
+    try:
+        qtbot.waitUntil(poll_started.is_set)
+        assert end.isEnabled()
+        end.click()
+        qtbot.waitUntil(lambda: "No focus session" in status.text())
+    finally:
+        release_poll.set()
+    qtbot.waitUntil(lambda: not window.status_tasks.busy)
+    assert "Stale session poll" not in seen
+    assert not end.isEnabled()
+
+
 def test_manager_starts_offline_session_and_refreshes_viewer_state(
     qtbot: QtBot, desktop: Desktop, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -379,3 +498,34 @@ def test_manager_offers_end_when_session_recovery_is_unresolved(
     assert (
         "The VM definition changed." in _widget(window, QLabel, "sessionStatus").text()
     )
+
+
+def test_contest_clock_refreshes_without_waiting_for_session_poll(
+    qtbot: QtBot, desktop: Desktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window, _, _ = desktop
+    sessions = _SessionService()
+    sessions.current = replace(
+        _session(),
+        profile="contest",
+        deadline=(datetime.now(UTC) + timedelta(seconds=90)).isoformat(),
+    )
+    monkeypatch.setattr(window, "session_service", sessions)
+    _go_to(window, "Focus Sessions")
+    end = _widget(window, QPushButton, "sessionEndButton")
+    label = _widget(window, QLabel, "sessionStatus")
+    qtbot.waitUntil(end.isEnabled)
+    assert "remaining" in label.text()
+    window.poll.stop()
+    window.session_clock.stop()
+
+    class ExpiredClock(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> "ExpiredClock":
+            return cls.fromtimestamp(datetime.now(UTC).timestamp() + 120, tz)
+
+    monkeypatch.setattr("focusvm.sessions.datetime", ExpiredClock)
+    window.session_clock.timeout.emit()
+    assert "Contest timer expired." in label.text()
+    assert not window.status_tasks.busy
+    assert end.isEnabled()
