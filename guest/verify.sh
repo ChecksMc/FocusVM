@@ -153,4 +153,12 @@ MANPAGER=cat man 2 open > open-man.txt
 [[ -s open-man.txt ]] || fail 'The Linux open(2) manual page is missing or empty.'
 printf 'PASS local manual page\n'
 
+step='offline references'
+for program in atril firefox kiwix-serve; do
+    command -v "$program" > /dev/null
+done
+MANPAGER=cat man -s 3 std::vector > vector-man.txt
+[[ -s vector-man.txt ]] || fail 'The C++ std::vector manual page is missing or empty.'
+printf 'PASS offline references\n'
+
 printf 'FocusVM guest verification passed.\n'

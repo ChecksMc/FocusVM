@@ -42,6 +42,9 @@ xfce4-terminal
 xfdesktop
 xfwm4
 Thunar
+atril
+firefox
+kiwix-tools
 vim-enhanced
 git
 gcc
@@ -49,6 +52,7 @@ gcc-c++
 make
 gdb
 libstdc++-devel
+libstdc++-docs
 python3
 python3-pip
 python-pip-wheel
@@ -93,9 +97,10 @@ cloud-init clean --logs --machine-id --seed
 test -s /usr/share/xgreeters/lightdm-gtk-greeter.desktop
 test -s /usr/share/xsessions/xfce.desktop
 test -s /etc/cloud/cloud.cfg.d/99-focusvm.cfg
-for program in vim git gcc g++ make gdb python3 man xfce4-terminal; do
+for program in vim git gcc g++ make gdb python3 man xfce4-terminal atril firefox kiwix-serve; do
     command -v "$program"
 done
+rpm -q libstdc++-docs
 python3 -m pip --version
 temporary_venv=$(mktemp -d)
 trap 'rm -rf -- "$temporary_venv"' EXIT
