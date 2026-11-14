@@ -56,6 +56,12 @@ The Qt manager and CLI completed Strict and Balanced session checks using dispos
 
 The desktop smoke checks used a small disposable boot image. The Fedora development image is exercised separately with its offline development and resource checks.
 
+### 0.1.0rc1 candidate checks
+
+The local Python 3.12.16 workflow passed 191 tests, Ruff, Mypy, Pyright, and the dependency audit. On Fedora 44 KDE Wayland, the installed candidate wheel imported the Fedora 44.2 development image using a disposable test signature. The manager and CLI booted it offline, reopened the fullscreen viewer after it closed, ended the session, and shut down the guest separately. The development image SHA-256 is `546968488fe44834d6aae4c489a1e935ac110d6ff5a052d89ea58c868c2793c5`.
+
+A hosted GitHub Actions result for the candidate and the full Fedora Workstation login and keyboard checks are pending. The local acceptance run used a temporary signer. A distributable signed guest requires a publisher key and a redistribution review. [Release procedure](release.md)
+
 ## Release record
 
 For a release candidate, build from the intended version tag and verify installation from the resulting artifacts. Record CI results, the real KVM and desktop results for both reference hosts, guest image verification, artifact checksums and known limitations. Retain only diagnostics that are suitable to share, with credentials and personal paths removed.
