@@ -76,6 +76,12 @@ The local Python 3.12.16 workflow passed 191 tests, Ruff, Mypy, Pyright, and the
 
 A hosted GitHub Actions result for the candidate and the full Fedora Workstation login and keyboard checks are pending. The local acceptance run used a temporary signer. A distributable signed guest requires a publisher key and a redistribution review. [Release procedure](release.md)
 
+### FocusVM Guest `guest-44.3` candidate checks
+
+On a Fedora 44 x86-64 KVM host, a disposable overlay booted with no network interface. The guest verified NoCloud setup, filesystem expansion, the display manager, and local development tools and references. The QCOW2 SHA-256 is `c2b842eb892304098f4e639cd19688d044b8a3fb4fdccc120401a19a3c72d42c`. The 2,048,174,750-byte Zstandard archive has SHA-256 `65b528fe33d493ab19c1b07aa9aabb6e6443190fc96c1e33a3c0acb485e798e6`.
+
+The release staging command verified the compressed image, full set of assets, and manifest signed with a disposable test key. Publisher signing, public access to corresponding sources, and acceptance on a second host distribution are pending. [Guest release procedure](release.md#prepare-the-guest-separately)
+
 ## Release record
 
 For a release candidate, build from the intended version tag and verify installation from the resulting artifacts. Record CI results, the real KVM and desktop results for both reference hosts, guest image verification, artifact checksums and known limitations. Retain only diagnostics that are suitable to share, with credentials and personal paths removed.

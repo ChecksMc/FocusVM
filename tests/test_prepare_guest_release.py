@@ -85,7 +85,9 @@ def release_inputs(tmp_path_factory: pytest.TempPathFactory) -> GuestInputs:
         encoding="utf-8",
     )
     (build / "packages.txt").write_text(
-        "generic-logos-1.0-1.noarch\ngeneric-release-1.0-1.noarch\n",
+        "generic-logos-1.0-1.noarch\n"
+        "generic-release-1.0-1.noarch\n"
+        "gpg-pubkey-36f612dcf27f7d1a48a835e4dbfcf71c6d9f90a6-6786af3b.(none)\n",
         encoding="utf-8",
     )
     keyring = build / "public.gpg"

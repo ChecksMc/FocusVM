@@ -31,7 +31,9 @@ from guest.build import (
 )
 
 GITHUB_ASSET_LIMIT = 2 * 1024**3
-RPM_ID = re.compile(r"(?P<name>[A-Za-z0-9_.+-]+)-[^\s-]+-[^\s-]+\.[A-Za-z0-9_]+")
+RPM_ID = re.compile(
+    r"(?P<name>[A-Za-z0-9_.+-]+)-[^\s-]+-[^\s-]+\.(?P<arch>[A-Za-z0-9_]+|\(none\))"
+)
 
 
 def prepare_release(
@@ -191,7 +193,9 @@ def _verify_build_inputs(assets: Path) -> None:
     names: set[str] = set()
     for package in packages:
         match = RPM_ID.fullmatch(package)
-        if match is None:
+        if match is None or (
+            match["arch"] == "(none)" and match["name"] != "gpg-pubkey"
+        ):
             raise BuildError(
                 f"Invalid RPM identifier in the guest package list: {package}"
             )

@@ -8,7 +8,7 @@ The current preview targets x86-64 Linux with KVM, system libvirt, and SPICE. Th
 | Fedora 44 GNOME Shell on a virtual Wayland monitor | Native viewer and recovery checks with a disposable KVM image. Full Fedora Workstation login, physical shortcuts, and acceptance of the Fedora 44.2 guest remain pending. |
 | Other Fedora releases, Linux distributions, or desktop sessions | Compatibility candidates when the same libvirt and viewer capabilities are available. |
 | Python 3.12 and 3.14 | CI targets the application minimum and the interpreter used on the reference Fedora 44 host. The distro libvirt binding must load in the Python that runs FocusVM. |
-| Fedora 44.2 guest recipe | Separately versioned build pinned to a Fedora installer. A trusted publisher-signed image is currently unavailable. |
+| FocusVM Guest `guest-44.3` | The Fedora 44-based candidate passed the offline boot checks on Fedora 44 x86-64. A publisher-signed download and acceptance on another Linux distribution are pending. |
 
 The reference follows Fedora's upstream support lifecycle. Before moving to a new Fedora version, rerun host acceptance on both desktop sessions and rebuild and check the guest recipe against that version. Report preview issues against current `main` or the latest candidate. [Fedora release lifecycle](https://docs.fedoraproject.org/en-US/releases/lifecycle/) · [Verification record](verification.md) · [Security policy](../SECURITY.md)
 
