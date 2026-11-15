@@ -3,13 +3,14 @@
 import json
 from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
 from uuid import UUID, uuid4
 
-from .local_state import atomic_write, file_lock, open_private_file
+from .journal import Journal, JournalError, JournalInputError, validate_note
+from .local_state import PrivateFileError, atomic_write, file_lock, open_private_file
 from .profiles import PROFILES, ProfileId
 from .viewer import (
     ViewerError,
@@ -58,6 +59,12 @@ class FocusSession:
 
 
 @dataclass(frozen=True, slots=True)
+class _Completion:
+    ended_at: str
+    note: str
+
+
+@dataclass(frozen=True, slots=True)
 class _Intent:
     token: UUID
     vm: UUID
@@ -67,6 +74,8 @@ class _Intent:
     profile: ProfileId = PROFILE_ID
     duration_minutes: int | None = None
     cage: bool = False
+    launched: bool = False
+    completion: _Completion | None = None
 
     def view(self, state: SessionState, detail: str | None = None) -> FocusSession:
         deadline = None
@@ -93,6 +102,7 @@ class SessionService:
         self.path = state_dir / "focus-session.json"
         self.log = state_dir / "focus-viewer.log"
         self.vm_service = vm_service
+        self.journal = Journal(state_dir)
 
     def start(
         self,
@@ -154,12 +164,46 @@ class SessionService:
             intent = self._load()
             return None if intent is None else self._snapshot(intent)
 
-    def end(self) -> None:
+    def end(self, *, note: str = "") -> None:
         with file_lock(self.path):
             intent = self._load()
             if intent is None:
                 return
-            self._close_viewer(intent)
+            completion = intent.completion
+            if completion is None:
+                try:
+                    note = validate_note(note)
+                except JournalInputError as error:
+                    raise SessionInputError(str(error)) from error
+                launched = intent.launched or self._viewer_running(intent)
+                if not launched:
+                    self._close_viewer(intent)
+                    self._save(None)
+                    return
+                completion = _Completion(datetime.now(UTC).isoformat(), note)
+                try:
+                    self._save(replace(intent, launched=True, completion=completion))
+                finally:
+                    self._close_viewer(intent)
+            else:
+                self._close_viewer(intent)
+            ended = datetime.fromisoformat(completion.ended_at)
+            started = datetime.fromisoformat(intent.started_at)
+            seconds = max(0, (ended - started) // timedelta(seconds=1))
+            try:
+                self.journal.record_session(
+                    intent.token, intent.vm_name, ended, seconds, note=completion.note
+                )
+            except (
+                JournalError,
+                JournalInputError,
+                OSError,
+                PrivateFileError,
+            ) as error:
+                raise SessionError(
+                    "The viewer is closed. End the session again to retry saving "
+                    f"the journal entry: {error}"
+                ) from error
             self._save(None)
 
     @contextmanager
@@ -183,16 +227,18 @@ class SessionService:
             launch_cage_viewer(command, intent.token, self.log)
         else:
             launch_focus_viewer(command, intent.token, self.log)
+        if not intent.launched:
+            self._save(replace(intent, launched=True))
         return intent.view("active")
 
     def _snapshot(self, intent: _Intent) -> FocusSession:
+        if intent.completion is not None:
+            return intent.view(
+                "unresolved",
+                "Ending the session. Repeat End to finish saving the journal entry.",
+            )
         try:
-            if intent.cage:
-                from .cage import cage_running
-
-                viewer_open = cage_running(intent.token)
-            else:
-                viewer_open = focus_viewer_running(intent.token)
+            viewer_open = self._viewer_running(intent)
             vm = self.vm_service.focus_status(intent.vm)
         except (
             OSError,
@@ -225,6 +271,13 @@ class SessionService:
 
             return check_cage_viewer(vm)
         return check_focus_viewer(vm)
+
+    def _viewer_running(self, intent: _Intent) -> bool:
+        if intent.cage:
+            from .cage import cage_running
+
+            return cage_running(intent.token)
+        return focus_viewer_running(intent.token)
 
     def _close_viewer(self, intent: _Intent) -> None:
         if intent.cage:
@@ -259,6 +312,9 @@ class SessionService:
             cage = data.get("cage", False)
             if not isinstance(cage, bool):
                 raise ValueError("Invalid focus-session viewer mode")
+            launched = data.get("launched", True)
+            if not isinstance(launched, bool):
+                raise ValueError("Invalid focus-session launch state")
             intent = _Intent(
                 UUID(token),
                 UUID(vm),
@@ -268,6 +324,8 @@ class SessionService:
                 profile,
                 duration,
                 cage,
+                launched,
+                _read_completion(data.get("completion")),
             )
             if duration is not None:
                 intent.view("disconnected")
@@ -285,6 +343,18 @@ def _field(record: dict[str, object], field: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"Invalid focus-session field {field}")
     return value
+
+
+def _read_completion(value: object) -> _Completion | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("Invalid focus-session completion")
+    completion = cast("dict[str, object]", value)
+    ended_at = _field(completion, "ended_at")
+    if datetime.fromisoformat(ended_at).utcoffset() is None:
+        raise ValueError("Invalid focus-session end time")
+    return _Completion(ended_at, validate_note(completion.get("note")))
 
 
 def _profile(value: object) -> ProfileId:

@@ -51,12 +51,17 @@ Install Cage on a local Wayland desktop, then select **Use Cage on Wayland** or 
 
 ## Journal and statistics
 
-Journal entries are recorded manually. They can include completed tasks, problems, items solved independently, references, and notes. `journal stats` summarizes the session count and recorded minutes, overall and by project. Entries stay in the local state directory.
+Ending a focus session saves its elapsed time in the local journal under the VM's name. The duration includes time spent with the viewer closed before ending the session. Use **Completion note (optional)** on the manager's **Focus Sessions** page or `--note` on the CLI to record what you finished. Closing the viewer alone leaves the session open.
+
+Add manual entries for any project with completed tasks, problems, items solved independently, references, and notes. The journal lists timed entries to the second. `journal stats` sums elapsed time before rounding down to whole minutes and also counts manual entries. Journal entries do not upload to WakaTime.
 
 ```sh
+focusvm session end --note 'Implemented a heap'
 focusvm journal record --project practice --minutes 45 \
   --completed 'Implemented a heap' --solved 'Fixed a boundary case'
 focusvm journal list --project practice
 focusvm journal stats --project practice
 focusvm journal remove ENTRY_ID
 ```
+
+If a journal write fails after the viewer closes, correct the file or disk issue and repeat End. FocusVM keeps the original end time and note for the retry.

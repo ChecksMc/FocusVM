@@ -91,6 +91,7 @@ class _Arguments(argparse.Namespace):
         "packages",
     ]
     session_command: Literal["start", "status", "reopen", "end"]
+    note: str
     storage_pool: str
     setup_pool: str | None
     redact: bool
@@ -260,9 +261,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     _json_option(sessions.add_parser("status", help="Read the current focus session"))
     _json_option(sessions.add_parser("reopen", help="Reopen the fullscreen viewer"))
-    _json_option(
-        sessions.add_parser("end", help="End the session and leave the VM running")
+    session_end = sessions.add_parser(
+        "end", help="End the session and leave the VM running"
     )
+    session_end.add_argument(
+        "--note", default="", metavar="TEXT", help="Add a note to the saved session"
+    )
+    _json_option(session_end)
 
     profiles = commands.add_parser("profiles", help="Inspect available focus profiles")
     profile_commands = profiles.add_subparsers(required=True)
@@ -849,7 +854,7 @@ def _dispatch_session(
         if not args.json:
             _print_viewer_controls(cage=session.cage)
     elif args.session_command == "end":
-        service.end()
+        service.end(note=args.note)
         if args.json:
             print(json.dumps({"state": "ended"}))
         else:
@@ -946,12 +951,15 @@ def _dispatch_journal(args: _Arguments, journal: Journal) -> int:
     else:
         entries = journal.list(args.project)
     if args.json:
-        print(json.dumps([asdict(entry) for entry in entries]))
+        print(json.dumps([entry.to_record() for entry in entries]))
     else:
         for entry in entries:
-            print(
-                f"{entry.id}  {entry.day}  {entry.project}  {entry.duration_minutes} min"
-            )
+            if entry.duration_seconds is None:
+                duration = f"{entry.duration_minutes} min"
+            else:
+                minutes, seconds = divmod(entry.duration_seconds, 60)
+                duration = f"{minutes}m {seconds:02d}s"
+            print(f"{entry.id}  {entry.day}  {entry.project}  {duration}")
             for label, items in (
                 ("Completed", entry.completed),
                 ("Problems", entry.problems),

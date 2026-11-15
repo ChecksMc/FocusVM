@@ -58,7 +58,7 @@ Strict and Balanced guests start without a network interface. Wayland users can 
 
 Import PDF, HTML, Markdown, and ZIM files in the manager’s **Resources** page. The CLI can attach a read-only reference disc, transfer Git bundles, and explicitly fetch or push from the host outside a focus session. WakaTime records activity only when you opt in and supply events. [Offline resources and synchronization](docs/resources-and-sync.md)
 
-Use Contest for an optional timer or Research for a session with local references. The CLI can save approved web references before a session, attach offline Python wheels, and record journal entries with optional statistics. [Advanced sessions and maintenance](docs/advanced-sessions.md)
+Use Contest for an optional timer or Research for a session with local references. The CLI can save approved web references before a session and attach offline Python wheels. Ending a session saves its duration in the local journal, with an optional note about what you finished. [Advanced sessions and maintenance](docs/advanced-sessions.md)
 
 ## Development and release
 

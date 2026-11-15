@@ -78,7 +78,7 @@ Libvirt owns actual VM status, resource allocations, device configuration, and v
 
 Create defines an offline domain. Start verifies the saved definition, launches the VM paused, and checks the live devices before letting the guest run. `configure` changes CPU and RAM only while the guest is stopped. Disk capacity is chosen at creation and status reports both virtual capacity and allocated bytes. Stop requests a graceful shutdown and leaves the VM visible if the request times out. Force stop, deletion, snapshots, and changes to an existing disk's capacity are later features.
 
-The session service tracks one active focus session per host user and reads current domain state before it changes anything. It verifies the offline device policy before boot or adoption, launches the local viewer, and exposes recovery if viewer startup or the VM fails. End Session leaves the guest available for saving work. Stop VM shuts the guest down separately. See [Focus sessions and networking](sessions.md) and [Guest image and provisioning](guest.md).
+The session service tracks one active focus session per host user. It verifies the offline device policy before boot or adoption, launches the local viewer, and exposes recovery if viewer startup or the VM fails. End Session closes the viewer and saves the elapsed time and optional note to `journal.json` in the XDG state directory. It retains the completion data in `focus-session.json` until the journal write succeeds. The session ID prevents duplicate entries on retry. Stop VM shuts the guest down separately. [Focus sessions and networking](sessions.md) · [Guest image and provisioning](guest.md)
 
 The resource service copies selected files into a private library and builds a read-only disc. A stopped VM can attach one such disc alongside its seed. The inventory records the managed volume key and the offline startup check validates both discs. Host Git remote operations, guest bundle extraction, and WakaTime upload hold the session lock while they run. Offline Git work and local activity recording remain available during a focus session. [Offline resources and synchronization](resources-and-sync.md)
 
@@ -99,7 +99,7 @@ The resource service copies selected files into a private library and builds a r
 | `focusvm configure` | Available | Change CPU and RAM on a stopped VM |
 | `focusvm session start --profile deep-work` | Available | Validate the profile, start or adopt the offline guest, and open the fullscreen viewer |
 | `focusvm session status`, `focusvm session reopen` | Available | Inspect the recorded session or reopen a disconnected viewer |
-| `focusvm session end` | Available | End the session and close its viewer |
+| `focusvm session end [--note TEXT]` | Available | Close the viewer and save the session to the local journal |
 | `focusvm profiles list` | Available | List built-in profiles and their default network policies |
 | `focusvm resources` | Available | Manage the library and build, attach, or eject a reference disc |
 | `focusvm sync` | Available | Exchange Git bundles or explicitly fetch or push one branch from the host |
@@ -118,4 +118,4 @@ Resolve the explicit VM selection or configured default to a managed UUID. Provi
 | Creation is pending and the domain is absent | Mark the attempt abandoned, preserve its storage, and retry with a fresh UUID. |
 | A focus viewer exits with the VM still running | Report a disconnected session. Reopen with the same session settings or end it from a host terminal. |
 | Offline checks fail or the VM cannot be inspected | Report the unresolved session and inspect diagnostics before reconnecting. |
-| The user ends a session | Close the viewer. Use a separate graceful stop to shut down the VM. |
+| The user ends a session | Save the completion time and note, close the viewer, and write the journal entry. Repeat End to finish an interrupted write. |

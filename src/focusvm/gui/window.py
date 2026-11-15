@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         self.records: tuple[VMRecord, ...] = ()
         self.status: VMStatus | None = None
         self.session: FocusSession | None = None
+        self._completion_note_session: tuple[UUID, str] | None = None
         self.session_checked = False
         self._status_generation = 0
         self._status_pending = False
@@ -292,6 +293,12 @@ class MainWindow(QMainWindow):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         layout.addWidget(self.session_status)
+        completion = QFormLayout()
+        self.session_completion_note = QLineEdit()
+        self.session_completion_note.setObjectName("sessionCompletionNote")
+        self.session_completion_note.setPlaceholderText("What did you finish?")
+        completion.addRow("Completion &note (optional)", self.session_completion_note)
+        layout.addLayout(completion)
         actions = QHBoxLayout()
         self.session_start = _button("sessionStartButton", "Start Focus Session")
         self.session_reopen = _button("sessionReopenButton", "Reopen Viewer")
@@ -412,7 +419,9 @@ class MainWindow(QMainWindow):
         self.session_reopen.setEnabled(
             ready and self.session is not None and self.session.state == "disconnected"
         )
-        self.session_end.setEnabled(ready and self.session is not None)
+        can_end = ready and self.session is not None
+        self.session_end.setEnabled(can_end)
+        self.session_completion_note.setEnabled(can_end)
         self.session_refresh.setEnabled(ready)
 
     def _load_settings(self) -> None:
@@ -685,6 +694,10 @@ class MainWindow(QMainWindow):
         )
 
     def _show_session(self, session: FocusSession | None) -> None:
+        note_session = (session.vm, session.started_at) if session is not None else None
+        if note_session != self._completion_note_session:
+            self.session_completion_note.clear()
+            self._completion_note_session = note_session
         self.session = session
         self.session_checked = True
         self._render_session(session)
@@ -770,13 +783,15 @@ class MainWindow(QMainWindow):
         )
 
     def _end_session(self) -> None:
+        note = self.session_completion_note.text()
+
         def ended(_result: None) -> None:
             self._show_session(None)
             self.task_status.setText("Focus session ended.")
 
         self._submit(
             "Ending focus session…",
-            self.session_service.end,
+            lambda: self.session_service.end(note=note),
             ended,
             failure=self._session_action_error,
         )
