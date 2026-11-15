@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -13,6 +14,7 @@ from focusvm import __version__
 from focusvm.cli import main
 from focusvm.config import ConfigPaths, ConfigStore, Settings, VMDefaults
 from focusvm.diagnostics import Diagnostic
+from focusvm.journal import Journal
 from focusvm.provisioning import ImageInput, VerifiedImage
 from focusvm.sessions import DEFAULT_NETWORK, PROFILE_ID, FocusSession, SessionError
 from focusvm.viewer import ViewerError
@@ -389,7 +391,13 @@ def test_session_inspection_and_end_do_not_require_valid_config(
 
     with patch("focusvm.cli.SessionService.end") as end:
         assert main(["session", "end", "--json"]) == 0
-    end.assert_called_once_with()
+    end.assert_called_once_with(note="")
+    assert json.loads(capsys.readouterr().out) == {"state": "ended"}
+
+    note = "Finished two problems"
+    with patch("focusvm.cli.SessionService.end") as end:
+        assert main(["session", "end", "--note", note, "--json"]) == 0
+    end.assert_called_once_with(note=note)
     assert json.loads(capsys.readouterr().out) == {"state": "ended"}
 
 
@@ -523,8 +531,29 @@ def test_journal_cli_records_and_summarizes_a_project(
     )
     [entry] = json.loads(capsys.readouterr().out)
     assert entry["solved"] == ["Heap bug"]
+    assert "duration_seconds" not in entry
+    assert main(["journal", "list"]) == 0
+    assert "practice  30 min" in capsys.readouterr().out
     assert main(["journal", "stats", "--project", "practice", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["duration_minutes"] == 30
     assert main(["journal", "remove", entry["id"], "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == [entry]
     assert not session_paths.config_file.exists()
+
+
+def test_journal_cli_lists_elapsed_duration_and_completion_note(
+    session_paths: ConfigPaths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    Journal(session_paths.state_dir).record_session(
+        uuid4(), "practice", datetime.now(UTC), 65, note="Fixed a heap bug"
+    )
+
+    assert main(["journal", "list"]) == 0
+    output = capsys.readouterr().out
+    assert "practice  1m 05s" in output
+    assert "Fixed a heap bug" in output
+
+    assert main(["journal", "list", "--json"]) == 0
+    [entry] = json.loads(capsys.readouterr().out)
+    assert entry["duration_seconds"] == 65
+    assert entry["notes"] == "Fixed a heap bug"

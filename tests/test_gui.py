@@ -351,6 +351,7 @@ class _SessionService:
     def __init__(self) -> None:
         self.current: FocusSession | None = None
         self.started: tuple[UUID | None, str, str] | None = None
+        self.completion_note: str | None = None
         self.started_signal = Event()
         self.finish_start = Event()
 
@@ -380,7 +381,8 @@ class _SessionService:
         self.current = session
         return session
 
-    def end(self) -> None:
+    def end(self, *, note: str = "") -> None:
+        self.completion_note = note
         self.current = None
 
 
@@ -427,6 +429,7 @@ def test_end_session_keeps_stale_passive_result_from_reopening_controls(
         release_poll.set()
     qtbot.waitUntil(lambda: not window.status_tasks.busy)
     assert "Stale session poll" not in seen
+    assert sessions.completion_note == ""
     assert not end.isEnabled()
 
 
@@ -444,7 +447,9 @@ def test_manager_starts_offline_session_and_refreshes_viewer_state(
     end = _widget(window, QPushButton, "sessionEndButton")
     refresh = _widget(window, QPushButton, "sessionRefreshButton")
     status = _widget(window, QLabel, "sessionStatus")
+    completion_note = _widget(window, QLineEdit, "sessionCompletionNote")
     qtbot.waitUntil(start.isEnabled)
+    assert not completion_note.isEnabled()
     assert target.text() == VM_NAME
     assert network.currentText() == "Balanced"
     assert network.count() == 2
@@ -463,9 +468,12 @@ def test_manager_starts_offline_session_and_refreshes_viewer_state(
     assert "Strict (offline)" in status.text()
     assert "elapsed" in status.text()
     assert not reopen.isEnabled()
+    assert completion_note.isEnabled()
+    completion_note.setText("Finished two problems")
 
+    assert sessions.current is not None
     sessions.current = replace(
-        _session(), state="disconnected", detail="Viewer exited."
+        sessions.current, state="disconnected", detail="Viewer exited."
     )
     refresh.click()
     qtbot.waitUntil(reopen.isEnabled)
@@ -476,6 +484,9 @@ def test_manager_starts_offline_session_and_refreshes_viewer_state(
     end.click()
     qtbot.waitUntil(start.isEnabled)
     assert sessions.current is None
+    assert sessions.completion_note == "Finished two problems"
+    assert completion_note.text() == ""
+    assert not completion_note.isEnabled()
     assert "No focus session" in status.text()
 
 

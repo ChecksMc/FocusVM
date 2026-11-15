@@ -1,6 +1,6 @@
 # First FocusVM session
 
-This walkthrough starts with a Fedora host that has KVM and a signed guest image. Install the host tools first if needed. The first boot can take longer while the guest creates your login and expands its filesystem. [Host setup](setup.md#quick-install) · [Build and sign a guest image](guest.md#sign-and-verify)
+This walkthrough starts with a Linux host that has KVM and a signed guest image. Install the host tools first if needed. The first boot can take longer while the guest creates your login and expands its filesystem. [Host setup](setup.md#quick-install) · [Use a published guest](guest.md#use-a-published-guest) · [Build and sign a guest image](guest.md#sign-and-verify)
 
 From the source checkout, run these commands as your desktop user.
 

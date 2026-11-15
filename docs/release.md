@@ -57,9 +57,43 @@ done
 
 ## Prepare the guest separately
 
-The Fedora `fedora-44.2` development build is unsigned. Use the [guest build guide](guest.md) to build and verify a local guest. Before redistributing any guest version, record the source and license obligations for its package set, confirm the applicable Fedora trademark terms, and retain the package inventory and build inputs. Sign `guest.json` using the publisher's OpenPGP key. Publish verified checksums for the exact assets, and provide the public key or its fingerprint through an independently trusted channel. Record the source commit, installer digest, guest digest, key fingerprint, and verification results together. [Fedora distribution guidance](https://fedoraproject.org/wiki/Distribution)
+Build and verify the guest from the exact source commit you plan to tag. The older `fedora-44.2` development image includes Fedora release and identity packages. Use the current [guest build recipe](guest.md#build-the-base-image) for a FocusVM-branded release candidate. Review the final image and release text for trademarked branding. If you plan to use the Fedora Remix marks, follow Fedora's requirements for replacing branded packages and displaying its support and attribution notices. [Fedora trademark guidelines](https://gitlab.com/fedora/legal/fedora-legal-docs/-/blob/main/modules/ROOT/pages/trademarks.adoc#distributing-fedora-materials)
 
-Keep the uncompressed `guest.qcow2` digest in `guest.json`. If the image is distributed as a compressed archive, record a separate checksum for the download and decompress it before importing. Check that the decompressed image matches the signed manifest and that a disposable VM can import and boot it. GitHub requires individual release assets to be smaller than 2 GiB. Use a compressed file within that limit or host the guest separately. [GitHub release asset limits](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#storage-and-bandwidth-quotas)
+Review the exact package inventory and retain the required licenses, notices, and redistribution conditions. Use the installed RPM versions and their source RPM metadata to identify the corresponding source, including patches and build scripts. Provide equivalent access alongside the guest binary download for packages whose licenses require it, and keep those sources available for as long as the image is offered. For GitHub, the guest release notes can point to a companion source archive or download location operated by the publisher. The inventory and build recipe alone are insufficient to provide corresponding source. [Fedora distribution guidance](https://fedoraproject.org/wiki/Legal:Distribution) · [GNU GPL FAQ](https://www.gnu.org/licenses/gpl-faq.html#SourceAndBinaryOnDifferentSites)
+
+### Sign the manifest
+
+Use a dedicated OpenPGP key controlled by the maintainer. If creating a key for the first guest release, replace the identity with the project's real maintainer contact and choose a passphrase when prompted.
+
+```sh
+gpg --quick-generate-key 'FocusVM Guest Publisher <maintainer@example.org>' ed25519 sign 2y
+gpg --list-keys --with-fingerprint 'FocusVM Guest Publisher'
+```
+
+Keep the private key, backups, and revocation certificate under the maintainer's control outside the repository, CI, and release assets. Record the full primary key fingerprint in the release notes and make it independently verifiable through a trusted maintainer channel, such as the maintainer's established website or direct contact. Export a public copy for the download. [GnuPG key generation and management](https://gnupg.org/documentation/manuals/gnupg/OpenPGP-Key-Management.html)
+
+### Stage the release assets
+
+Run from the guest's source checkout in the FocusVM Python environment with GnuPG, `qemu-img`, and `zstd` installed. Allow temporary space for a copy of both the uncompressed and compressed image. Set `fingerprint` to the trusted full primary key fingerprint. Reuse `guest.sig` if the verified build was already signed with this key.
+
+```sh
+set -eu
+version=guest-44.3
+build="guest-output/$version"
+fingerprint=YOUR_FULL_PUBLISHER_PRIMARY_KEY_FINGERPRINT
+gpg --local-user "$fingerprint" --detach-sign --output "$build/guest.sig" "$build/guest.json"
+gpg --export "$fingerprint" > "$build/publisher.gpg"
+zstd -T0 -19 -o "$build/guest.qcow2.zst" -- "$build/guest.qcow2"
+python -m scripts.prepare_guest_release \
+  --build-dir "$build" --version "$version" \
+  --compressed-image "$build/guest.qcow2.zst" \
+  --signature "$build/guest.sig" --keyring "$build/publisher.gpg" \
+  --publisher-fingerprint "$fingerprint" --output "dist/guest/$version"
+```
+
+The script verifies the publisher fingerprint and detached signature, the signed guest version, the QCOW2 and its digest, the decompressed upload, and the recorded build inputs against the current recipe. It stages the guest release files and generates `SHA256SUMS`. Each asset must be smaller than 2 GiB to stage it for GitHub. For a larger image, use another artifact host and manually generate the distribution checksums. Verify the uncompressed guest with `focusvm verify-image` and test a fresh download before publishing. [GitHub release asset limits](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#storage-and-bandwidth-quotas)
+
+Create a separate GitHub prerelease draft from the guest version's tag and attach the staged files. Record the source commit, installer digest, guest digest, publisher fingerprint, redistribution information, and verification results in its notes. Download the assets into a fresh directory and follow the [published guest instructions](guest.md#use-a-published-guest). Import the downloaded guest into a disposable VM and verify that it boots offline before publishing.
 
 ## Prepare the GitHub draft
 

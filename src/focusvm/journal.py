@@ -1,4 +1,4 @@
-"""Private session entries and summaries from explicitly recorded work."""
+"""Private session history and summaries."""
 
 import json
 import re
@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from .local_state import atomic_write, file_lock, open_private_file
 
@@ -32,6 +32,13 @@ class JournalEntry:
     solved: tuple[str, ...]
     references: tuple[str, ...]
     notes: str
+    duration_seconds: int | None = None
+
+    def to_record(self) -> dict[str, object]:
+        record = asdict(self)
+        if self.duration_seconds is None:
+            del record["duration_seconds"]
+        return record
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,11 +80,32 @@ class Journal:
             problems=_items(problems, "problems encountered"),
             solved=_items(solved, "independently solved problems"),
             references=_items(references, "references"),
-            notes=_notes(notes),
+            notes=validate_note(notes),
         )
         with file_lock(self.path):
             self._save((*self._load(), entry))
         return entry
+
+    def record_session(
+        self, token: UUID, project: str, ended: datetime, seconds: int, *, note: str
+    ) -> None:
+        seconds = _seconds(seconds)
+        entry = JournalEntry(
+            id=token.hex,
+            project=_project(project),
+            day=ended.astimezone().date().isoformat(),
+            duration_minutes=seconds // 60,
+            completed=(),
+            problems=(),
+            solved=(),
+            references=(),
+            notes=validate_note(note),
+            duration_seconds=seconds,
+        )
+        with file_lock(self.path):
+            entries = self._load()
+            if all(previous.id != entry.id for previous in entries):
+                self._save((*entries, entry))
 
     def list(self, project: str | None = None) -> tuple[JournalEntry, ...]:
         selected = _project(project) if project is not None else None
@@ -101,17 +129,20 @@ class Journal:
     def stats(self, project: str | None = None) -> JournalStats:
         entries = self.list(project)
         sessions = Counter(entry.project for entry in entries)
-        minutes: Counter[str] = Counter()
+        seconds: Counter[str] = Counter()
         for entry in entries:
-            minutes[entry.project] += entry.duration_minutes
+            elapsed = entry.duration_seconds
+            seconds[entry.project] += (
+                entry.duration_minutes * 60 if elapsed is None else elapsed
+            )
         projects = tuple(
-            ProjectStats(name, sessions[name], minutes[name])
+            ProjectStats(name, sessions[name], seconds[name] // 60)
             for name in sorted(sessions, key=lambda name: (name.casefold(), name))
         )
-        return JournalStats(len(entries), minutes.total(), projects)
+        return JournalStats(len(entries), seconds.total() // 60, projects)
 
     def _save(self, entries: tuple[JournalEntry, ...]) -> None:
-        payload = {"version": 1, "entries": [asdict(entry) for entry in entries]}
+        payload = {"version": 1, "entries": [entry.to_record() for entry in entries]}
         atomic_write(self.path, json.dumps(payload, ensure_ascii=False) + "\n")
 
     def _load(self) -> tuple[JournalEntry, ...]:
@@ -140,16 +171,25 @@ class Journal:
 
 def _read_entry(value: object) -> JournalEntry:
     entry = _object(value)
+    seconds = (
+        _seconds(entry["duration_seconds"]) if "duration_seconds" in entry else None
+    )
+    minutes = entry.get("duration_minutes")
+    if seconds is None:
+        minutes = _duration(minutes)
+    elif type(minutes) is not int or minutes != seconds // 60:
+        raise JournalInputError("Journal minutes disagree with the session duration")
     return JournalEntry(
         id=_identifier(entry.get("id")),
         project=_project(entry.get("project")),
         day=_day(entry.get("day")),
-        duration_minutes=_duration(entry.get("duration_minutes")),
+        duration_minutes=minutes,
         completed=_items(entry.get("completed"), "completed tasks"),
         problems=_items(entry.get("problems"), "problems encountered"),
         solved=_items(entry.get("solved"), "independently solved problems"),
         references=_items(entry.get("references"), "references"),
-        notes=_notes(entry.get("notes")),
+        notes=validate_note(entry.get("notes")),
+        duration_seconds=seconds,
     )
 
 
@@ -189,6 +229,12 @@ def _duration(value: object) -> int:
     return value
 
 
+def _seconds(value: object) -> int:
+    if type(value) is not int or value < 0:
+        raise JournalInputError("Use a nonnegative session duration in seconds")
+    return value
+
+
 def _items(value: object, label: str) -> tuple[str, ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         raise JournalInputError(f"Use a list for {label}")
@@ -200,7 +246,7 @@ def _items(value: object, label: str) -> tuple[str, ...]:
     return tuple(items)
 
 
-def _notes(value: object) -> str:
+def validate_note(value: object) -> str:
     if not isinstance(value, str) or not _readable(value):
         raise JournalInputError("Enter readable text for notes")
     return value

@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from focusvm.journal import Journal, JournalError
 from focusvm.sessions import SessionError, SessionInputError, SessionService
 from focusvm.virtualization import (
     VirtualizationError,
@@ -65,11 +66,77 @@ def test_session_survives_frontend_restart_and_ends_without_stopping_vm(
         launch.assert_called_once_with(command, token, first.log)
         with pytest.raises(SessionInputError, match="already exists"):
             second.start(vm_id)
-        second.end()
+        ended = datetime.fromisoformat(session.started_at) + timedelta(seconds=76)
+        with patch("focusvm.sessions.datetime", wraps=datetime) as clock:
+            clock.now.return_value = ended
+            second.end(note="Implemented a heap")
         second.end()
         close.assert_called_once_with(token)
         stop.assert_not_called()
         assert first.status() is None
+        (entry,) = Journal(tmp_path).list()
+        assert (entry.id, entry.project) == (token.hex, session.vm_name)
+        assert (entry.duration_seconds, entry.notes) == (76, "Implemented a heap")
+
+
+def test_end_retries_journal_with_the_original_completion(tmp_path: Path) -> None:
+    vm_id = uuid4()
+    vm_service = VMService(tmp_path, tmp_path)
+    sessions = SessionService(tmp_path, vm_service)
+    with (
+        patch.object(vm_service, "focus_status", return_value=_vm(vm_id, active=True)),
+        patch.object(vm_service, "start"),
+        patch.object(vm_service, "check_console"),
+        patch("focusvm.sessions.check_focus_viewer", return_value=("virt-viewer", [])),
+        patch("focusvm.sessions.launch_focus_viewer"),
+        patch("focusvm.sessions.close_focus_viewer") as close,
+    ):
+        active = sessions.start(vm_id)
+        ended = datetime.fromisoformat(active.started_at) + timedelta(seconds=20)
+        with (
+            patch("focusvm.sessions.datetime", wraps=datetime) as clock,
+            patch.object(
+                sessions.journal,
+                "record_session",
+                side_effect=JournalError("unreadable"),
+            ),
+        ):
+            clock.now.return_value = ended
+            with pytest.raises(SessionError, match="viewer is closed.*retry"):
+                sessions.end(note="Keep the first note")
+        current = sessions.status()
+        assert current is not None and current.state == "unresolved"
+        with pytest.raises(SessionError, match="saving the journal entry"):
+            sessions.reopen()
+        recovered = SessionService(tmp_path, vm_service)
+        recovered.end(note="Replacement note")
+        assert close.call_count == 2
+    (entry,) = Journal(tmp_path).list()
+    assert (entry.duration_seconds, entry.notes) == (20, "Keep the first note")
+
+
+def test_ending_a_failed_start_does_not_add_history(tmp_path: Path) -> None:
+    vm_id = uuid4()
+    vm_service = VMService(tmp_path, tmp_path)
+    sessions = SessionService(tmp_path, vm_service)
+    with (
+        patch.object(vm_service, "focus_status", return_value=_vm(vm_id, active=True)),
+        patch.object(vm_service, "start"),
+        patch.object(vm_service, "check_console"),
+        patch("focusvm.sessions.check_focus_viewer", return_value=("virt-viewer", [])),
+        patch(
+            "focusvm.sessions.launch_focus_viewer",
+            side_effect=OSError("viewer failure"),
+        ),
+        patch("focusvm.sessions.focus_viewer_running", return_value=False),
+        patch("focusvm.sessions.close_focus_viewer") as close,
+    ):
+        with pytest.raises(OSError, match="viewer failure"):
+            sessions.start(vm_id)
+        sessions.end()
+        close.assert_called_once()
+    assert sessions.status() is None
+    assert Journal(tmp_path).list() == ()
 
 
 def test_interrupted_viewer_launch_can_be_reopened(tmp_path: Path) -> None:

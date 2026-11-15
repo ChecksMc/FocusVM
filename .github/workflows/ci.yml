@@ -30,7 +30,7 @@ jobs:
       - name: Install system test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libopengl0 libxkbcommon0 openssl qemu-utils xorriso
+          sudo apt-get install -y --no-install-recommends gnupg libegl1 libgl1 libopengl0 libxkbcommon0 openssl qemu-utils xorriso zstd
       - name: Install development dependencies
         run: |
           python -m pip install --upgrade pip

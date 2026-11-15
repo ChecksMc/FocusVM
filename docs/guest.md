@@ -1,6 +1,20 @@
 # Guest image and provisioning
 
-The Fedora 44 guest targets x86-64 BIOS. It contains Xfce, LightDM, a terminal, Vim, Git, GCC/G++, Make, GDB, Python with pip and virtual environments, and offline reference tools. First boot creates the regular `focusvm` account from the VM's NoCloud seed. The guest's tools and desktop are independent of the host desktop.
+The FocusVM Guest uses Fedora 44 packages and targets x86-64 BIOS. It contains Xfce, LightDM, a terminal, Vim, Git, GCC/G++, Make, GDB, Python with pip and virtual environments, and offline reference tools. First boot creates the regular `focusvm` account from the VM's NoCloud seed. The guest's tools and desktop are independent of the host desktop.
+
+## Use a published guest
+
+When a separately versioned FocusVM Guest release is available, download `guest.qcow2.zst`, `guest.json`, `guest.sig`, `publisher.gpg`, `build-inputs.json`, `packages.txt`, and `SHA256SUMS` to one directory. Confirm the publisher's full primary key fingerprint through a channel you already trust, such as a previously verified maintainer contact. Inspect the downloaded key and compare its primary fingerprint before continuing. The key file should list one primary public key. [GnuPG key listing](https://gnupg.org/documentation/manuals/gnupg/Operational-GPG-Commands.html)
+
+```sh
+gpg --show-keys --with-fingerprint publisher.gpg
+sha256sum -c SHA256SUMS
+zstd -d -- guest.qcow2.zst
+focusvm verify-image --image guest.qcow2 --manifest guest.json \
+  --signature guest.sig --keyring publisher.gpg
+```
+
+The checksum file checks the downloaded assets. The OpenPGP signature authenticates the manifest and its digest of the uncompressed disk. `verify-image` verifies the signed disk and checks its QCOW2 format, capacity, and consistency using a temporary private copy. Supply the same uncompressed image, manifest, signature, and keyring when [creating a VM](#prepare-a-vm).
 
 ## Build the base image
 
@@ -13,17 +27,17 @@ PYTHONPATH=src python3 -m guest.build \
   --iso Fedora-Server-netinst-x86_64-44-1.7.iso \
   --checksum Fedora-Server-44-1.7-x86_64-CHECKSUM \
   --fedora-keyring fedora.gpg \
-  --version fedora-44.2 --output guest-output/fedora-44.2
+  --version guest-44.3 --output guest-output/guest-44.3
 ```
 
 The builder verifies the installer, applies [the Kickstart recipe](../guest/fedora-44.ks) to a new disk, and compacts the result to a standalone 12 GiB virtual-capacity QCOW2. Kickstart locks root, disables SSH, configures graphical boot, and enables NoCloud and root filesystem expansion. An enlarged offline overlay runs [the guest verifier](../guest/verify.sh) before the builder emits `guest.qcow2`, `guest.json`, `packages.txt`, and `build-inputs.json`. `work/install.log` and `work/verify.log` contain the serial output. The `work` directory also retains intermediate inputs for diagnosing the build. [NoCloud data source](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html) · [QEMU disk image utility](https://www.qemu.org/docs/master/tools/qemu-img.html)
 
 ## Sign and verify
 
-The repository has no published signed image or project signing key. For your own build, select a dedicated signing-capable OpenPGP key by its full fingerprint. Keep the private key and recovery material separate from the build output. You can add `--sign-with FINGERPRINT` to the build command, or sign an existing build you produced and verified.
+For your own build, select a signing-capable OpenPGP key by its full fingerprint. Keep the private key and recovery material separate from the build output. You can add `--sign-with FINGERPRINT` to the build command, or sign an existing build you produced and verified. Maintainers publishing a binary guest can follow the [release procedure](release.md#prepare-the-guest-separately).
 
 ```sh
-cd guest-output/fedora-44.2
+cd guest-output/guest-44.3
 fingerprint=YOUR_FULL_SIGNING_KEY_FINGERPRINT
 gpg --local-user "$fingerprint" --detach-sign --output guest.sig guest.json
 gpg --export "$fingerprint" > trusted.gpg
@@ -31,7 +45,7 @@ focusvm verify-image --image guest.qcow2 --manifest guest.json \
   --signature guest.sig --keyring trusted.gpg
 ```
 
-When using the build flag, reuse its `guest.sig` and run the export and verification commands. If you obtain an image from another publisher, get their authorized public key or its full fingerprint through a separate channel you trust. Compare the fingerprint before using the key. For a compressed download, check its distribution checksum, decompress the QCOW2, and run `verify-image` on the decompressed file. This verifies the manifest signature, image digest, format, virtual size, and QCOW2 consistency without connecting to libvirt or creating a VM. It needs temporary space for a private image copy. [GnuPG signing and key export](https://gnupg.org/documentation/manuals/gnupg/Operational-GPG-Commands.html) · [Guest publication procedure](release.md#prepare-the-guest-separately)
+When using the build flag, reuse its `guest.sig` and run the export and verification commands. [GnuPG signing and key export](https://gnupg.org/documentation/manuals/gnupg/Operational-GPG-Commands.html)
 
 ## Prepare a VM
 

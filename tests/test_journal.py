@@ -1,7 +1,8 @@
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from stat import S_IMODE
+from uuid import uuid4
 
 import pytest
 
@@ -65,6 +66,24 @@ def test_journal_rejects_invalid_input_without_writing(tmp_path: Path) -> None:
     with pytest.raises(JournalInputError, match="journal entry ID"):
         journal.remove("../entry")
     assert not journal.path.parent.exists()
+
+
+def test_timed_entries_preserve_seconds_and_allow_retries(tmp_path: Path) -> None:
+    journal = Journal(tmp_path)
+    ended = datetime(2026, 11, 12, 12, tzinfo=UTC)
+    token = uuid4()
+    manual = journal.record("Work", ended.date(), 25)
+    journal.record_session(token, "Work", ended, 20, note="")
+    journal.record_session(token, "Work", ended, 30, note="Duplicate")
+    journal.record_session(uuid4(), "Work", ended, 45, note="Finished")
+
+    timed = [entry for entry in journal.list() if entry.duration_seconds is not None]
+    assert [(entry.duration_seconds, entry.notes) for entry in timed] == [
+        (45, "Finished"),
+        (20, ""),
+    ]
+    assert "duration_seconds" not in manual.to_record()
+    assert journal.stats().duration_minutes == 26
 
 
 def test_journal_preserves_corrupt_state_on_attempted_record(tmp_path: Path) -> None:
