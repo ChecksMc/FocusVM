@@ -4,6 +4,10 @@ FocusVM is a source-first technical preview for Linux developers who want to pra
 
 The PySide6 manager and CLI share settings and manage the same QEMU/KVM VMs through libvirt. The Fedora guest includes Vim, Git, C++, Python, debugging tools, and offline references. Deep Work, Contest, and Research sessions can open it fullscreen.
 
+## Quick note on top:
+
+This project is intentionally vibecoded. The irony is deliberate. FocusVM is a tool built with AI assistance, designed to create an environment where you don’t use AI assistance. I’m not a VM engineer and don’t claim to be. If you want to contribute real expertise, PRs welcome.
+
 ## Host compatibility
 
 Use an x86-64 Linux host with Python 3.12 or newer, hardware virtualization, an authorized `qemu:///system` connection, and an active directory-backed storage pool. The desktop manager uses PySide6. Fullscreen sessions use virt-viewer and local SPICE. [Host prerequisites and troubleshooting](docs/setup.md#reference-hosts)
