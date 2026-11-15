@@ -21,6 +21,10 @@ poweroff
 
 %packages --exclude-weakdeps
 @core
+generic-release
+generic-logos
+-fedora-release*
+-fedora-logos*
 kernel
 NetworkManager
 cloud-init
@@ -66,6 +70,26 @@ util-linux
 
 %post --erroronfail --interpreter=/usr/bin/bash --log=/root/focusvm-install.log
 set -euo pipefail
+
+rpm -q generic-release generic-logos
+if [[ -n $(rpm -qa 'fedora-release*' 'fedora-logos*') ]]; then
+    printf 'The guest contains Fedora release or logo RPMs.\n' >&2
+    exit 1
+fi
+
+# Give the guest its own identity while retaining Fedora compatibility metadata.
+rm -f /etc/os-release /etc/issue /etc/issue.net
+cat > /etc/os-release <<'EOF'
+NAME="FocusVM Guest"
+PRETTY_NAME="FocusVM Guest"
+ID=focusvm
+ID_LIKE=fedora
+VERSION_ID=44
+HOME_URL="https://github.com/ChecksMc/FocusVM"
+SUPPORT_URL="https://github.com/ChecksMc/FocusVM/issues"
+EOF
+printf 'FocusVM Guest\n' > /etc/issue
+cp /etc/issue /etc/issue.net
 
 cat > /etc/cloud/cloud.cfg.d/99-focusvm.cfg <<'EOF'
 datasource_list: [NoCloud]

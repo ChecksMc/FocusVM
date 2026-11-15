@@ -23,7 +23,16 @@ step='guest identity'
 [[ $EUID -ne 0 && $(id -un) == focusvm ]] || fail 'Sign in to the guest as focusvm and run without sudo.'
 # shellcheck source=/dev/null
 source /etc/os-release
-[[ ${ID:-} == fedora && ${VERSION_ID:-} == 44 && $(uname -m) == x86_64 ]] || fail 'Expected Fedora 44 on x86_64.'
+[[ ${VERSION_ID:-} == 44 && $(uname -m) == x86_64 ]] || fail 'Expected an x86_64 guest based on Fedora 44.'
+case ${ID:-} in
+    focusvm)
+        [[ ${ID_LIKE:-} == fedora ]] || fail 'Expected the FocusVM guest to identify its Fedora base.'
+        rpm -q generic-release generic-logos >/dev/null
+        [[ -z $(rpm -qa 'fedora-release*' 'fedora-logos*') ]] || fail 'Found Fedora release or logo RPMs.'
+        ;;
+    fedora) ;; # Earlier development images used the upstream Fedora identity.
+    *) fail 'Expected a FocusVM guest.' ;;
+esac
 
 step='installed tools'
 for tool in cloud-init timeout systemctl xfce4-session xfce4-terminal pgrep vim git g++ make gdb python3 man ip; do

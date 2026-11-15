@@ -20,6 +20,7 @@ _SOURCE_REQUIRED = {
     "guest/verify.sh",
     "install.sh",
     "scripts/install.py",
+    "scripts/prepare_guest_release.py",
     "scripts/setup_fedora.py",
     "setup-fedora.sh",
     "src/focusvm/cli.py",

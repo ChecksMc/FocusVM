@@ -8,6 +8,7 @@
 - Verify a signed guest image before import with `focusvm verify-image`, export a stopped VM's standalone disk with `focusvm backup`, and share prerequisite check results with `focusvm doctor --redact --json`.
 - Check clean wheel and source installs in CI for Python 3.12 and 3.14. [Preview compatibility](docs/compatibility.md)
 - Save elapsed focus sessions to the local journal automatically. Add an optional completion note in the manager or with `focusvm session end --note TEXT`.
+- Build the guest with FocusVM branding and stage signed guest release files after checking the publisher fingerprint and disk checksum. [Guest release procedure](docs/release.md#prepare-the-guest-separately)
 
 ## 0.1.0rc1
 
