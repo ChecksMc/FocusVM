@@ -3,7 +3,7 @@
 import json
 import re
 from collections.abc import Generator, Mapping
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast
@@ -266,6 +266,13 @@ class VMService:
             )
             status = backend.set_resource_media(record.uuid, inventory.owner_id, volume)
             self._save_record(inventory, replace(record, resource_key=desired))
+            if record.resource_key is not None:
+                # Best effort: a disc that stays behind is harmless, so cleanup
+                # never turns a completed attach or eject into a failure.
+                with suppress(VirtualizationError):
+                    backend.delete_resource_volume(
+                        record.uuid, inventory.owner_id, record.resource_key
+                    )
             return status
 
     @contextmanager

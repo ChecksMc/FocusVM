@@ -1,10 +1,18 @@
+# pyright: reportPrivateUsage=false
+
 from email.message import Message
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from focusvm.research import Research, ResearchError, ResearchInputError
+from focusvm.research import (
+    Research,
+    ResearchError,
+    ResearchInputError,
+    _collapse_blank_lines,
+    _Text,
+)
 
 
 def test_research_exact_allowlist_and_publishes_inert_text(tmp_path: Path) -> None:
@@ -82,3 +90,26 @@ def test_research_refuses_redirect_and_strips_active_html(tmp_path: Path) -> Non
     assert "Reference" in output.read_text()
     assert "Example" in output.read_text()
     assert "bad()" not in output.read_text()
+
+
+def test_research_html_keeps_block_structure_readable() -> None:
+    parser = _Text()
+    parser.feed(
+        "<html><head><title>Docs</title></head><body>"
+        "<div>First block</div><div>Second <b>block</b></div>"
+        "<ul><li>one</li><li>two</li></ul>"
+        "<table><tr><td>cell a</td><td>cell b</td></tr></table>"
+        "<svg><text>icon label</text></svg><h5>Small heading</h5>"
+        "</body></html>"
+    )
+    parser.close()
+    text = _collapse_blank_lines(
+        " ".join(line.split()) for line in "".join(parser.parts).splitlines()
+    )
+    lines = text.splitlines()
+    for expected in ("Docs", "First block", "Second block", "one", "two"):
+        assert expected in lines
+    assert "cell a" in lines and "cell b" in lines
+    assert "Small heading" in lines
+    assert "icon label" not in text
+    assert "\n\n\n" not in text and not text.startswith("\n")

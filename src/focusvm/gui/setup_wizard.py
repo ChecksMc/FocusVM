@@ -31,11 +31,18 @@ _CHECK_LABELS = {
     "config_directory": "Settings directory",
     "state_directory": "State directory",
     "cache_directory": "Cache directory",
+    "data_directory": "Data directory",
     "libvirt": "Libvirt connection",
     "vm_capabilities": "Virtual machine capabilities",
     "storage_pool": "Storage pool",
     "desktop": "Desktop session",
+    "focus_viewer": "Focus viewer",
     "guest_image": "Guest image",
+    "qemu-img": "qemu-img tool",
+    "gpgv": "Signature verifier (gpgv)",
+    "openssl": "OpenSSL tool",
+    "xorriso": "ISO builder (xorriso)",
+    "virt-viewer": "virt-viewer",
 }
 _STATUS_LABELS = {"ok": "Passed", "warning": "Warning", "error": "Failed"}
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Remove the superseded reference disc volume from the libvirt pool when you replace or eject a VM's resources, instead of keeping every previous disc. Interrupted uploads and failed base image verification also delete the partial volume they created.
+- Keep saved research pages readable. Common layout elements such as `div`, lists, tables, and smaller headings now start new lines, inline SVG and embedded frames are dropped, and repeated blank lines are collapsed.
+- Fix the manager's **Remove…** confirmation on the Resources page so that choosing **Yes** removes the file with current PySide6 releases.
+- Show readable names for every host check in the first-run wizard.
 - Install FocusVM for the current user with `./install.sh`. The default installation adds a desktop menu entry. Pass `--cli-only` for a terminal installation.
 - Prepare a Fedora host with `./setup-fedora.sh`. Run `focusvm setup` or use the first-run wizard to detect a usable storage pool and save settings.
 - Remove the user-installed application with `focusvm uninstall` while keeping VMs, resources, and settings.

@@ -87,6 +87,14 @@ class StorageVolume:
         assert flags == Driver.VIR_STORAGE_VOL_GET_PHYSICAL
         return [0, 32 * 1024**3, 5 * 1024**2]
 
+    def delete(self, flags: int) -> int:
+        assert flags == 0
+        DELETED.append(self.volume.key)
+        return 0
+
+
+DELETED: list[str] = []
+
 
 class Domain:
     def __init__(self, definition: VMDefinition = DEFINITION) -> None:
@@ -495,3 +503,29 @@ def test_upload_aborts_without_publishing_an_incomplete_volume(
     stream.abort.assert_called_once_with()
     stream.finish.assert_not_called()
     pool.refresh.assert_not_called()
+    volume.delete.assert_called_once_with(0)
+
+
+def test_superseded_resource_volume_is_deleted_only_when_detached() -> None:
+    DELETED.clear()
+    domain = Domain()
+    connection = Connection(domain)
+    backend = connection.backend()
+    backend.set_resource_media(VM_ID, OWNER, RESOURCE)
+    with pytest.raises(VirtualizationError, match="still attached"):
+        backend.delete_resource_volume(VM_ID, OWNER, RESOURCE.key)
+    assert DELETED == []
+
+    backend.set_resource_media(VM_ID, OWNER, None)
+    backend.delete_resource_volume(VM_ID, OWNER, RESOURCE.key)
+    assert DELETED == [RESOURCE.key]
+
+
+def test_resource_volume_deletion_refuses_unmanaged_volumes() -> None:
+    DELETED.clear()
+    backend = Connection(Domain()).backend()
+    with pytest.raises(VirtualizationError, match="not a managed raw ISO"):
+        backend.delete_resource_volume(VM_ID, OWNER, SEED.key)
+    with pytest.raises(VirtualizationError, match="not owned"):
+        backend.delete_resource_volume(VM_ID, FOREIGN_OWNER, RESOURCE.key)
+    assert DELETED == []

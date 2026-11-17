@@ -113,6 +113,7 @@ class _Volume(Protocol):
     def download(
         self, stream: _Stream, offset: int, length: int, flags: int
     ) -> int: ...
+    def delete(self, flags: int) -> int: ...
 
 
 class _Pool(Protocol):
@@ -264,6 +265,7 @@ class LibvirtBackend:
                 name = f"{prefix}-{uuid4().hex}.qcow2"
             base = self._upload(storage, name, path)
             if not self._base_matches(base, file_size, size_bytes, sha256):
+                self._discard(base)
                 raise VirtualizationError(
                     f"Imported volume {name!r} failed verification"
                 )
@@ -298,8 +300,32 @@ class LibvirtBackend:
             _validate_resource_iso(source)
             name = f"focusvm-{uuid}-resources-{uuid4().hex}.iso"
             volume = self._upload_stream(self._directory_pool(pool), name, source)
-            self._validate_resource_volume(volume, uuid)
+            try:
+                self._validate_resource_volume(volume, uuid)
+            except BaseException:
+                # The volume was created by this call and is not attached anywhere.
+                self._discard(volume)
+                raise
             return _volume(volume)
+
+    def delete_resource_volume(self, uuid: UUID, owner_id: UUID, key: str) -> None:
+        """Delete a superseded resource disc that no definition of the VM uses."""
+        with self._operation(f"Cannot remove previous resource media for VM {uuid}"):
+            domain = self._require_domain(uuid)
+            roots = [self._owned_xml(domain, owner_id)]
+            if domain.isActive():
+                roots.append(self._owned_xml(domain, owner_id, live=True))
+            if any(_require_metadata(root).get("resources") == key for root in roots):
+                raise VirtualizationError("The resource volume is still attached")
+            volume = self._connection.storageVolLookupByKey(key)
+            self._validate_resource_volume(volume, uuid)
+            if any(
+                source.get("file") == volume.path()
+                for root in roots
+                for source in root.iterfind("devices/disk/source")
+            ):
+                raise VirtualizationError("The resource volume is still attached")
+            volume.delete(0)
 
     def define(self, definition: VMDefinition) -> VMStatus:
         _validate_resources(definition.cpus, definition.memory_mib)
@@ -581,9 +607,16 @@ class LibvirtBackend:
         ):
             with suppress(self._driver.libvirtError):
                 stream.abort()
+            # Remove the incomplete volume this call created so retries do not
+            # accumulate unusable files in the storage pool.
+            self._discard(volume)
             raise
         pool.refresh(0)
         return pool.storageVolLookupByName(name)
+
+    def _discard(self, volume: _Volume) -> None:
+        with suppress(self._driver.libvirtError):
+            volume.delete(0)
 
     def _base_matches(
         self, volume: _Volume, file_size: int, capacity: int, sha256: str

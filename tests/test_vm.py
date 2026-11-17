@@ -32,6 +32,8 @@ class _Backend:
         self.read_modes: list[bool] = []
         self.resource_volumes: dict[UUID, str | None] = {}
         self.fail_after_resource_change = False
+        self.deleted_resources: list[str] = []
+        self.fail_resource_delete = False
 
     @contextmanager
     def connect(self, *, read_only: bool = False) -> Generator["_Backend"]:
@@ -122,6 +124,13 @@ class _Backend:
         if self.fail_after_resource_change:
             raise VirtualizationError("connection lost after media change")
         return updated
+
+    def delete_resource_volume(self, vm: UUID, owner: UUID, key: str) -> None:
+        self.status(vm, owner)
+        assert self.resource_volumes.get(vm) != key
+        if self.fail_resource_delete:
+            raise VirtualizationError("pool is busy")
+        self.deleted_resources.append(key)
 
     def start(self, vm: UUID, owner: UUID, base_key: str) -> VMStatus:
         base = self.domains[vm][0].base
@@ -307,6 +316,25 @@ def test_resource_change_refuses_running_guest_and_external_drift(
     with pytest.raises(VirtualizationError, match="identity changed"):
         service.start(vm)
     assert backend.start_calls == 1
+
+
+def test_replacing_or_ejecting_resources_removes_the_previous_disc(
+    vm_environment: tuple[VMService, _Backend, ImageInput], tmp_path: Path
+) -> None:
+    service, backend, source = vm_environment
+    vm = _create(service, source).uuid
+    service.attach_resources(vm, tmp_path / "first.iso")
+    first = service.list_records()[0].resource_key
+    assert first is not None and backend.deleted_resources == []
+
+    service.attach_resources(vm, tmp_path / "second.iso")
+    second = service.list_records()[0].resource_key
+    assert second is not None and backend.deleted_resources == [first]
+
+    backend.fail_resource_delete = True
+    assert not service.eject_resources(vm).resource_media_attached
+    assert service.list_records()[0].resource_key is None
+    assert backend.deleted_resources == [first]
 
 
 def test_existing_v1_inventory_without_resources_remains_readable(

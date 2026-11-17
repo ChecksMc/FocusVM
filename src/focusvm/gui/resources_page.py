@@ -185,7 +185,17 @@ class ResourcesPage(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
         )
         dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
-        if dialog.exec() != QMessageBox.StandardButton.Yes:
+        dialog.setEscapeButton(QMessageBox.StandardButton.Cancel)
+        dialog.exec()
+        # exec() returns a plain int, which does not reliably compare equal to the
+        # Python enum used by PySide6. Ask which standard button was clicked instead.
+        clicked = dialog.clickedButton()
+        confirmed = (
+            clicked is not None
+            and dialog.standardButton(clicked) == QMessageBox.StandardButton.Yes
+        )
+        dialog.deleteLater()
+        if not confirmed:
             return
 
         def remove() -> tuple[Resource, ...]:

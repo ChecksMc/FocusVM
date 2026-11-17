@@ -5,6 +5,7 @@ import os
 import re
 import socket
 import ssl
+from collections.abc import Iterable
 from html.parser import HTMLParser
 from http.client import HTTPException, HTTPSConnection
 from ipaddress import ip_address
@@ -186,15 +187,34 @@ def _download(host: str, target: str) -> str:
         parser = _Text()
         parser.feed(text)
         parser.close()
-        text = "\n".join(
+        text = _collapse_blank_lines(
             " ".join(line.split()) for line in "".join(parser.parts).splitlines()
         )
     return text
 
 
+def _collapse_blank_lines(lines: Iterable[str]) -> str:
+    """Keep paragraph breaks while dropping layout-only runs of empty lines."""
+    kept: list[str] = []
+    for line in lines:
+        if line or (kept and kept[-1]):
+            kept.append(line)
+    while kept and not kept[-1]:
+        kept.pop()
+    return "\n".join(kept)
+
+
 class _Text(HTMLParser):
-    _hidden = {"script", "style", "template"}
-    _blocks = {"h1", "h2", "h3", "h4", "p", "li", "pre", "br", "section", "tr"}
+    _hidden = {"script", "style", "template", "svg", "math", "iframe", "object"}
+    # Most pages lay out text with generic containers. Without line breaks for
+    # these elements, a typical page collapses into one unreadable line.
+    _blocks = {
+        "address", "article", "aside", "blockquote", "br", "caption", "dd",
+        "details", "div", "dl", "dt", "figcaption", "figure", "footer", "form",
+        "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "nav",
+        "ol", "p", "pre", "section", "summary", "table", "td", "th", "title",
+        "tr", "ul",
+    }  # fmt: skip
 
     def __init__(self) -> None:
         super().__init__()
